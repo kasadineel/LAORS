@@ -15,9 +15,17 @@ export default async function LogWeightPage({ params }: { params: { id: string }
 
   const animal = await prisma.animal.findFirst({
     where: { id: params.id, organizationId: core.activeOrganizationId },
+    select: { id: true, tagNumber: true, name: true },
   })
 
-  if (!animal) return notFound()
+  if (!animal) notFound()
+
+  // Capture non-null primitives so TS is happy inside the server action closure
+  const animalId = animal.id
+  const animalTagNumber = animal.tagNumber
+  const animalName = animal.name
+  const orgId = core.activeOrganizationId
+  const createdById = core.user.id
 
   async function logWeight(formData: FormData) {
     "use server"
@@ -27,7 +35,6 @@ export default async function LogWeightPage({ params }: { params: { id: string }
 
     const value = weightRaw ? Number(weightRaw) : NaN
     if (!Number.isFinite(value)) {
-      // simple fallback — you can add real validation UI later
       throw new Error("Weight must be a number")
     }
 
@@ -36,34 +43,44 @@ export default async function LogWeightPage({ params }: { params: { id: string }
         type: "WEIGHT",
         value,
         notes,
-        animalId: animal.id,
-        organizationId: core.activeOrganizationId,
-        createdById: core.user.id,
+        animalId,
+        organizationId: orgId,
+        createdById,
       },
     })
 
-    redirect(`/dashboard/animals/${animal.id}`)
+    redirect(`/dashboard/animals/${animalId}`)
   }
 
   return (
     <main style={{ padding: 24, maxWidth: 560 }}>
       <h1>Log Weight</h1>
       <p style={{ marginTop: 6 }}>
-        {animal.tagNumber ? `#${animal.tagNumber}` : "Animal"} {animal.name ? `— ${animal.name}` : ""}
+        {animalTagNumber ? `#${animalTagNumber}` : "Animal"} {animalName ? `— ${animalName}` : ""}
       </p>
 
       <form action={logWeight} style={{ display: "grid", gap: 12, marginTop: 16 }}>
         <label>
           Weight
-          <input name="weight" placeholder="e.g. 642.5" style={{ display: "block", width: "100%", padding: 8 }} />
+          <input
+            name="weight"
+            placeholder="e.g. 642.5"
+            style={{ display: "block", width: "100%", padding: 8 }}
+          />
         </label>
 
         <label>
           Notes (optional)
-          <input name="notes" placeholder="Morning weigh-in" style={{ display: "block", width: "100%", padding: 8 }} />
+          <input
+            name="notes"
+            placeholder="Morning weigh-in"
+            style={{ display: "block", width: "100%", padding: 8 }}
+          />
         </label>
 
-        <button type="submit" style={{ padding: 10 }}>Save</button>
+        <button type="submit" style={{ padding: 10 }}>
+          Save
+        </button>
       </form>
     </main>
   )

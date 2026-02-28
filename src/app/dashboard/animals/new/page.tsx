@@ -1,31 +1,28 @@
+import { auth } from "@clerk/nextjs/server"
 import { redirect } from "next/navigation"
-import { currentUser } from "@clerk/nextjs/server"
-import { ensureCore } from "@/lib/ensure-core"
 import { prisma } from "@/lib/prisma"
+import { ensureUserOrganization } from "@/lib/onboard-user"
 
 export default async function NewAnimalPage() {
-  const user = await currentUser()
-  if (!user) return null
+  const { userId } = await auth()
+  if (!userId) redirect("/sign-in")
 
-  const core = await ensureCore({
-    clerkUserId: user.id,
-    email: user.emailAddresses[0]?.emailAddress ?? "",
-    name: [user.firstName, user.lastName].filter(Boolean).join(" ") || null,
-  })
+  const orgId = await ensureUserOrganization(userId)
+  if (!orgId) redirect("/sign-in")
 
   async function createAnimal(formData: FormData) {
     "use server"
 
-    const tagNumber = (formData.get("tagNumber") as string | null)?.trim() || null
-    const name = (formData.get("name") as string | null)?.trim() || null
-    const sexClass = (formData.get("sexClass") as string | null)?.trim() || null
+    const tagNumber = (formData.get("tagNumber")?.toString() || "").trim() || null
+    const name = (formData.get("name")?.toString() || "").trim() || null
+    const sexClass = (formData.get("sexClass")?.toString() || "").trim() || null
 
     await prisma.animal.create({
       data: {
         tagNumber,
         name,
         sexClass,
-        organizationId: core.activeOrganizationId,
+        organizationId: orgId,
       },
     })
 
@@ -33,26 +30,14 @@ export default async function NewAnimalPage() {
   }
 
   return (
-    <main style={{ padding: 24, maxWidth: 560 }}>
+    <main style={{ padding: 24 }}>
       <h1>Add Animal</h1>
 
-      <form action={createAnimal} style={{ display: "grid", gap: 12, marginTop: 16 }}>
-        <label>
-          Tag Number
-          <input name="tagNumber" placeholder="A001" style={{ display: "block", width: "100%", padding: 8 }} />
-        </label>
-
-        <label>
-          Name (optional)
-          <input name="name" placeholder="Red Queen" style={{ display: "block", width: "100%", padding: 8 }} />
-        </label>
-
-        <label>
-          Sex Class (optional)
-          <input name="sexClass" placeholder="HEIFER / STEER / BULL / COW" style={{ display: "block", width: "100%", padding: 8 }} />
-        </label>
-
-        <button type="submit" style={{ padding: 10 }}>Create</button>
+      <form action={createAnimal} style={{ display: "flex", flexDirection: "column", gap: 12, maxWidth: 400 }}>
+        <input name="tagNumber" placeholder="Tag #" style={{ padding: 8 }} />
+        <input name="name" placeholder="Name" style={{ padding: 8 }} />
+        <input name="sexClass" placeholder="Sex Class (HEIFER/STEER…)" style={{ padding: 8 }} />
+        <button type="submit" style={{ padding: "8px 12px" }}>Save Animal</button>
       </form>
     </main>
   )
