@@ -1,7 +1,9 @@
 import { auth } from "@clerk/nextjs/server"
+import { ModuleKey } from "@prisma/client"
 import { redirect } from "next/navigation"
 import { prisma } from "@/lib/prisma"
 import { ensureUserOrganization } from "@/lib/onboard-user"
+import { requireModuleForOrganization } from "@/lib/module-entitlements"
 
 export default async function NewAnimalPage() {
   const { userId } = await auth()
@@ -9,9 +11,12 @@ export default async function NewAnimalPage() {
 
   const orgId = await ensureUserOrganization(userId)
   if (!orgId) redirect("/sign-in")
+  await requireModuleForOrganization(orgId, ModuleKey.STOCKER)
 
   async function createAnimal(formData: FormData) {
     "use server"
+
+    await requireModuleForOrganization(orgId, ModuleKey.STOCKER)
 
     const tagNumber = (formData.get("tagNumber")?.toString() || "").trim() || null
     const name = (formData.get("name")?.toString() || "").trim() || null

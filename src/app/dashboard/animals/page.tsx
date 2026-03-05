@@ -1,8 +1,10 @@
 import Link from "next/link"
 import { auth } from "@clerk/nextjs/server"
+import { ModuleKey } from "@prisma/client"
 import { redirect } from "next/navigation"
 import { prisma } from "@/lib/prisma"
 import { ensureUserOrganization } from "@/lib/onboard-user"
+import { requireModuleForOrganization } from "@/lib/module-entitlements"
 
 export default async function AnimalsPage() {
   const { userId } = await auth()
@@ -10,6 +12,7 @@ export default async function AnimalsPage() {
 
   const orgId = await ensureUserOrganization(userId)
   if (!orgId) redirect("/sign-in")
+  await requireModuleForOrganization(orgId, ModuleKey.STOCKER)
 
   const animals = await prisma.animal.findMany({
     where: { organizationId: orgId },
@@ -22,9 +25,6 @@ export default async function AnimalsPage() {
       createdAt: true,
     },
   })
-
-  // Optional debug (safe)
-  console.log("[animals page] ids:", animals.map((a) => a.id))
 
   return (
     <main style={{ padding: 24 }}>
@@ -46,9 +46,6 @@ export default async function AnimalsPage() {
                     <strong>{a.tagNumber ?? "—"}</strong> — {a.name ?? "Unnamed"} (
                     {a.sexClass ?? "—"})
                   </Link>
-
-                  {/* Optional debug to confirm href correctness */}
-                  <div style={{ fontSize: 12, opacity: 0.7 }}>href: {href}</div>
                 </li>
               )
             })}

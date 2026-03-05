@@ -8,15 +8,35 @@ type EnsureCoreInput = {
 
 export async function ensureCore(input: EnsureCoreInput) {
   // 1) Ensure user exists
-  const user =
-    (await prisma.user.findUnique({ where: { clerkUserId: input.clerkUserId } })) ??
-    (await prisma.user.create({
+  const user = await prisma.$transaction(async (tx) => {
+    const existingByClerkUserId = await tx.user.findUnique({
+      where: { clerkUserId: input.clerkUserId },
+    })
+
+    if (existingByClerkUserId) return existingByClerkUserId
+
+    const existingByEmail = await tx.user.findUnique({
+      where: { email: input.email },
+    })
+
+    if (existingByEmail) {
+      return tx.user.update({
+        where: { id: existingByEmail.id },
+        data: {
+          clerkUserId: input.clerkUserId,
+          ...(input.name ? { name: input.name } : {}),
+        },
+      })
+    }
+
+    return tx.user.create({
       data: {
         clerkUserId: input.clerkUserId,
         email: input.email,
         name: input.name,
       },
-    }))
+    })
+  })
 
   // 2) Ensure membership exists (hybrid: single-org experience now)
   const memberships = await prisma.membership.findMany({

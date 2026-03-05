@@ -5,8 +5,13 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
-      
+
+enum ModuleKey {
+  STOCKER
+}
+
 model Organization {
   id          String        @id @default(cuid())
   name        String
@@ -14,10 +19,28 @@ model Organization {
   updatedAt   DateTime      @updatedAt
 
   memberships Membership[]
+  modules     OrganizationModule[]
+  owners      Owner[]
+  pens        Pen[]
+  lots        Lot[]
+  invoices    Invoice[]
   animals     Animal[]
   events      Event[]
 
   @@index([createdAt])
+}
+
+model OrganizationModule {
+  id              String        @id @default(cuid())
+  organization    Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organizationId  String
+  module          ModuleKey
+  enabled         Boolean       @default(true)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@unique([organizationId, module])
+  @@index([organizationId])
 }
 
 model User {
@@ -47,6 +70,121 @@ model Membership {
   @@unique([userId, organizationId])
   @@index([organizationId])
   @@index([userId])
+}
+
+model Owner {
+  id              String        @id @default(cuid())
+  organization    Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organizationId  String
+  name            String
+  lots            Lot[]
+  invoices        Invoice[]
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@index([organizationId])
+}
+
+model Pen {
+  id              String        @id @default(cuid())
+  organization    Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organizationId  String
+  name            String
+  capacity        Int?
+  lots            Lot[]
+  outgoingMoves   LotMove[]     @relation("LotMoveFromPen")
+  incomingMoves   LotMove[]     @relation("LotMoveToPen")
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@index([organizationId])
+}
+
+model Lot {
+  id              String        @id @default(cuid())
+  organization    Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organizationId  String
+  owner           Owner         @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+  ownerId         String
+  pen             Pen           @relation(fields: [penId], references: [id], onDelete: Restrict)
+  penId           String
+  headCount       Int
+  arrivalDate     DateTime
+  exitDate        DateTime?
+  notes           String?
+  moves           LotMove[]
+  treatments      Treatment[]
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@index([organizationId])
+  @@index([ownerId])
+  @@index([penId])
+  @@index([arrivalDate])
+  @@index([exitDate])
+}
+
+model LotMove {
+  id              String        @id @default(cuid())
+  lot             Lot           @relation(fields: [lotId], references: [id], onDelete: Cascade)
+  lotId           String
+  fromPen         Pen           @relation("LotMoveFromPen", fields: [fromPenId], references: [id], onDelete: Restrict)
+  fromPenId       String
+  toPen           Pen           @relation("LotMoveToPen", fields: [toPenId], references: [id], onDelete: Restrict)
+  toPenId         String
+  moveDate        DateTime
+  headCountMoved  Int
+  createdAt       DateTime      @default(now())
+
+  @@index([lotId])
+  @@index([moveDate])
+}
+
+model Treatment {
+  id              String        @id @default(cuid())
+  lot             Lot           @relation(fields: [lotId], references: [id], onDelete: Cascade)
+  lotId           String
+  medicine        String
+  dosePerHead     Float
+  date            DateTime
+  notes           String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@index([lotId])
+  @@index([date])
+}
+
+model Invoice {
+  id              String        @id @default(cuid())
+  owner           Owner         @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+  ownerId         String
+  organization    Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organizationId  String
+  date            DateTime
+  total           Float
+  lines           InvoiceLine[]
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@index([organizationId])
+  @@index([ownerId])
+  @@index([date])
+}
+
+model InvoiceLine {
+  id              String        @id @default(cuid())
+  invoice         Invoice       @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  invoiceId       String
+  quantity        Float
+  description     String
+  weight          Float?
+  price           Float
+  amount          Float
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@index([invoiceId])
 }
 
 model Animal {

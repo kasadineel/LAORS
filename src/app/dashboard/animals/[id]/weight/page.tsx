@@ -1,6 +1,8 @@
 import { redirect, notFound } from "next/navigation"
 import { currentUser } from "@clerk/nextjs/server"
+import { ModuleKey } from "@prisma/client"
 import { ensureCore } from "@/lib/ensure-core"
+import { requireModuleForOrganization } from "@/lib/module-entitlements"
 import { prisma } from "@/lib/prisma"
 
 export default async function LogWeightPage({ params }: { params: { id: string } }) {
@@ -12,6 +14,7 @@ export default async function LogWeightPage({ params }: { params: { id: string }
     email: user.emailAddresses[0]?.emailAddress ?? "",
     name: [user.firstName, user.lastName].filter(Boolean).join(" ") || null,
   })
+  await requireModuleForOrganization(core.activeOrganizationId, ModuleKey.STOCKER)
 
   const animal = await prisma.animal.findFirst({
     where: { id: params.id, organizationId: core.activeOrganizationId },
@@ -29,6 +32,8 @@ export default async function LogWeightPage({ params }: { params: { id: string }
 
   async function logWeight(formData: FormData) {
     "use server"
+
+    await requireModuleForOrganization(orgId, ModuleKey.STOCKER)
 
     const weightRaw = (formData.get("weight") as string | null)?.trim()
     const notes = (formData.get("notes") as string | null)?.trim() || null
