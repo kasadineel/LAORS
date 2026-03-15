@@ -1,3 +1,4 @@
+import { MembershipRole } from "@prisma/client"
 import { prisma } from "@/lib/prisma"
 
 type EnsureCoreInput = {
@@ -41,6 +42,7 @@ export async function ensureCore(input: EnsureCoreInput) {
   // 2) Ensure membership exists (hybrid: single-org experience now)
   const memberships = await prisma.membership.findMany({
     where: { userId: user.id },
+    // TODO: Prefer active memberships once Membership.active is fully aligned across schema, client, and DB.
     orderBy: { createdAt: "asc" },
   })
 
@@ -48,10 +50,10 @@ export async function ensureCore(input: EnsureCoreInput) {
     // Create org + owner membership
     const organization = await prisma.organization.create({
       data: {
-        name: `${input.name ?? "My"} Ranch`,
+        name: input.name ? `${input.name}'s Operation` : "New Operation",
         memberships: {
           create: {
-            role: "OWNER",
+            role: MembershipRole.OWNER,
             userId: user.id,
           },
         },

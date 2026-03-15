@@ -1,12 +1,27 @@
 import { revalidatePath } from "next/cache"
+import { ActionBar } from "@/components/stocker/ActionBar"
+import { CardSection } from "@/components/stocker/CardSection"
+import { PageHeader } from "@/components/stocker/PageHeader"
+import { StatusRow } from "@/components/stocker/StatusRow"
+import { Button } from "@/components/stocker/ui/Button"
+import { Input } from "@/components/stocker/ui/Input"
 import { ModuleKey } from "@prisma/client"
 import { prisma } from "@/lib/prisma"
 import { requireModuleForOrganization } from "@/lib/module-entitlements"
 import { requireStockerAccess } from "@/lib/stocker"
-import { buttonStyle, cardStyle, inputStyle, pageStyle, secondaryButtonStyle } from "@/lib/stocker-ui"
+import { getRoleDisplayName, requireRole, ROLE_MANAGER, ROLE_OWNER } from "@/lib/permissions"
+import {
+  cardStyle,
+  emptyStateStyle,
+  gridStyle,
+  inputStyle,
+  metaTextStyle,
+  pageStyle,
+  stackStyle,
+} from "@/lib/stocker-ui"
 
 export default async function PensPage() {
-  const core = await requireStockerAccess()
+  const core = await requireStockerAccess([ROLE_OWNER, ROLE_MANAGER])
   const orgId = core.activeOrganizationId
 
   const pens = await prisma.pen.findMany({
@@ -30,6 +45,11 @@ export default async function PensPage() {
     "use server"
 
     await requireModuleForOrganization(orgId, ModuleKey.STOCKER)
+    await requireRole({
+      userId: core.user.id,
+      organizationId: orgId,
+      allowedRoles: [ROLE_OWNER, ROLE_MANAGER],
+    })
     const name = formData.get("name")?.toString().trim()
     const capacityRaw = formData.get("capacity")?.toString().trim()
     const capacity = capacityRaw ? Number(capacityRaw) : null
@@ -52,6 +72,11 @@ export default async function PensPage() {
     "use server"
 
     await requireModuleForOrganization(orgId, ModuleKey.STOCKER)
+    await requireRole({
+      userId: core.user.id,
+      organizationId: orgId,
+      allowedRoles: [ROLE_OWNER, ROLE_MANAGER],
+    })
     const penId = formData.get("penId")?.toString()
     const name = formData.get("name")?.toString().trim()
     const capacityRaw = formData.get("capacity")?.toString().trim()
@@ -75,6 +100,11 @@ export default async function PensPage() {
     "use server"
 
     await requireModuleForOrganization(orgId, ModuleKey.STOCKER)
+    await requireRole({
+      userId: core.user.id,
+      organizationId: orgId,
+      allowedRoles: [ROLE_OWNER, ROLE_MANAGER],
+    })
     const penId = formData.get("penId")?.toString()
     if (!penId) return
 
@@ -109,56 +139,74 @@ export default async function PensPage() {
 
   return (
     <main style={pageStyle}>
-      <h1 style={{ marginTop: 0 }}>Pens</h1>
+      <PageHeader
+        title="Pens"
+        subtitle="Manage pen names and capacities for the current organization."
+        badge="Stocker"
+      />
+      <StatusRow
+        organizationName={core.organization.name}
+        roleLabel={getRoleDisplayName(core.role)}
+      />
+      <ActionBar primaryAction={{ href: "#new-pen", label: "+ New Pen" }} />
 
-      <section style={cardStyle}>
-        <h2 style={{ marginTop: 0 }}>Add Pen</h2>
-        <form action={createPen} style={{ display: "grid", gap: 12, gridTemplateColumns: "2fr 1fr auto" }}>
-          <input name="name" placeholder="Pen name" style={inputStyle} />
-          <input name="capacity" placeholder="Capacity" inputMode="numeric" style={inputStyle} />
-          <button type="submit" style={buttonStyle}>
+      <CardSection id="new-pen" title="New Pen">
+        <form action={createPen} style={{ ...stackStyle, maxWidth: 720 }}>
+          <div style={gridStyle}>
+            <Input label="Pen Name" name="name" placeholder="West Bimerly" required style={inputStyle} />
+            <Input label="Capacity" name="capacity" placeholder="120" inputMode="numeric" style={inputStyle} />
+          </div>
+          <div>
+            <Button type="submit" variant="primary">
             Save Pen
-          </button>
+            </Button>
+          </div>
         </form>
-      </section>
+      </CardSection>
 
-      <section style={{ marginTop: 20, display: "grid", gap: 12 }}>
+      <CardSection title="Pen Directory">
         {pens.length === 0 ? (
-          <p>No pens yet.</p>
+          <div className="stocker-empty-state" style={emptyStateStyle}>
+            <strong style={{ display: "block", marginBottom: 8 }}>No pens yet.</strong>
+            Create your first pen to start organizing cattle flow across the yard.
+          </div>
         ) : (
-          pens.map((pen) => (
-            <article key={pen.id} style={cardStyle}>
-              <form action={updatePen} style={{ display: "grid", gap: 12 }}>
-                <input type="hidden" name="penId" value={pen.id} />
-                <div style={{ fontSize: 12, opacity: 0.7 }}>
-                  Lots: {pen._count.lots} | Moves: {pen._count.outgoingMoves + pen._count.incomingMoves}
-                </div>
-                <div style={{ display: "grid", gap: 12, gridTemplateColumns: "2fr 1fr" }}>
-                  <input name="name" defaultValue={pen.name} style={inputStyle} />
-                  <input
-                    name="capacity"
-                    defaultValue={pen.capacity ?? ""}
-                    inputMode="numeric"
-                    style={inputStyle}
-                  />
-                </div>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  <button type="submit" style={buttonStyle}>
-                    Update
-                  </button>
-                </div>
-              </form>
+          <div style={stackStyle}>
+            {pens.map((pen) => (
+              <article key={pen.id} className="stocker-card" style={cardStyle}>
+                <form action={updatePen} style={stackStyle}>
+                  <input type="hidden" name="penId" value={pen.id} />
+                  <div style={metaTextStyle}>
+                    Lots: {pen._count.lots} | Moves: {pen._count.outgoingMoves + pen._count.incomingMoves}
+                  </div>
+                  <div style={gridStyle}>
+                    <Input label="Pen Name" name="name" defaultValue={pen.name} style={inputStyle} />
+                    <Input
+                      label="Capacity"
+                      name="capacity"
+                      defaultValue={pen.capacity ?? ""}
+                      inputMode="numeric"
+                      style={inputStyle}
+                    />
+                  </div>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <Button type="submit" variant="primary">
+                      Update
+                    </Button>
+                  </div>
+                </form>
 
-              <form action={deletePen} style={{ marginTop: 10 }}>
-                <input type="hidden" name="penId" value={pen.id} />
-                <button type="submit" style={secondaryButtonStyle}>
-                  Delete
-                </button>
-              </form>
-            </article>
-          ))
+                <form action={deletePen} style={{ marginTop: 10 }}>
+                  <input type="hidden" name="penId" value={pen.id} />
+                  <Button type="submit" variant="secondary">
+                    Delete
+                  </Button>
+                </form>
+              </article>
+            ))}
+          </div>
         )}
-      </section>
+      </CardSection>
     </main>
   )
 }

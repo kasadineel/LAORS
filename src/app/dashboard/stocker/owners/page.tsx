@@ -1,40 +1,95 @@
 import { revalidatePath } from "next/cache"
+import { ActionBar } from "@/components/stocker/ActionBar"
+import { CardSection } from "@/components/stocker/CardSection"
+import { PageHeader } from "@/components/stocker/PageHeader"
+import { StatusRow } from "@/components/stocker/StatusRow"
+import { Button } from "@/components/stocker/ui/Button"
+import { Card } from "@/components/stocker/ui/Card"
+import { Input } from "@/components/stocker/ui/Input"
+import { Table } from "@/components/stocker/ui/Table"
+import { Textarea } from "@/components/stocker/ui/Textarea"
 import { prisma } from "@/lib/prisma"
 import { requireModuleForOrganization } from "@/lib/module-entitlements"
 import { requireStockerAccess } from "@/lib/stocker"
-import { buttonStyle, cardStyle, inputStyle, pageStyle, secondaryButtonStyle } from "@/lib/stocker-ui"
+import { getRoleDisplayName, requireRole, ROLE_MANAGER, ROLE_OWNER } from "@/lib/permissions"
+import {
+  cardStyle,
+  emptyStateStyle,
+  gridStyle,
+  inputStyle,
+  metaTextStyle,
+  pageStyle,
+  stackStyle,
+  tableContainerStyle,
+} from "@/lib/stocker-ui"
 import { ModuleKey } from "@prisma/client"
 
 export default async function OwnersPage() {
-  const core = await requireStockerAccess()
+  const core = await requireStockerAccess([ROLE_OWNER, ROLE_MANAGER])
   const orgId = core.activeOrganizationId
+  const today = new Date()
 
-  const owners = await prisma.owner.findMany({
-    where: { organizationId: orgId },
-    orderBy: { name: "asc" },
-    select: {
-      id: true,
-      name: true,
-      _count: {
-        select: {
-          lots: true,
-          invoices: true,
+  const [owners, openLots] = await Promise.all([
+    prisma.owner.findMany({
+      where: { organizationId: orgId },
+      orderBy: { name: "asc" },
+      select: {
+        id: true,
+        name: true,
+        yardageRatePerHeadDay: true,
+        medicineMarkupPercent: true,
+        billingNotes: true,
+        billingAddress: true,
+        _count: {
+          select: {
+            lots: true,
+            invoices: true,
+          },
         },
       },
-    },
-  })
+    }),
+    prisma.lot.findMany({
+      where: {
+        organizationId: orgId,
+        arrivalDate: { lte: today },
+        OR: [{ exitDate: null }, { exitDate: { gte: today } }],
+      },
+      select: {
+        ownerId: true,
+        headCount: true,
+      },
+    }),
+  ])
+
+  const inventoryByOwner = new Map<string, number>()
+  for (const lot of openLots) {
+    inventoryByOwner.set(lot.ownerId, (inventoryByOwner.get(lot.ownerId) ?? 0) + lot.headCount)
+  }
 
   async function createOwner(formData: FormData) {
     "use server"
 
     await requireModuleForOrganization(orgId, ModuleKey.STOCKER)
+    await requireRole({
+      userId: core.user.id,
+      organizationId: orgId,
+      allowedRoles: [ROLE_OWNER, ROLE_MANAGER],
+    })
     const name = formData.get("name")?.toString().trim()
+    const yardageRatePerHeadDay = parseNullableNumber(formData.get("yardageRatePerHeadDay"))
+    const medicineMarkupPercent = parseNullableNumber(formData.get("medicineMarkupPercent")) ?? 0
+    const billingNotes = formData.get("billingNotes")?.toString().trim() || null
+    const billingAddress = formData.get("billingAddress")?.toString().trim() || null
     if (!name) return
 
     await prisma.owner.create({
       data: {
         organizationId: orgId,
         name,
+        yardageRatePerHeadDay,
+        medicineMarkupPercent,
+        billingNotes,
+        billingAddress,
       },
     })
 
@@ -46,13 +101,22 @@ export default async function OwnersPage() {
     "use server"
 
     await requireModuleForOrganization(orgId, ModuleKey.STOCKER)
+    await requireRole({
+      userId: core.user.id,
+      organizationId: orgId,
+      allowedRoles: [ROLE_OWNER, ROLE_MANAGER],
+    })
     const ownerId = formData.get("ownerId")?.toString()
     const name = formData.get("name")?.toString().trim()
+    const yardageRatePerHeadDay = parseNullableNumber(formData.get("yardageRatePerHeadDay"))
+    const medicineMarkupPercent = parseNullableNumber(formData.get("medicineMarkupPercent")) ?? 0
+    const billingNotes = formData.get("billingNotes")?.toString().trim() || null
+    const billingAddress = formData.get("billingAddress")?.toString().trim() || null
     if (!ownerId || !name) return
 
     await prisma.owner.updateMany({
       where: { id: ownerId, organizationId: orgId },
-      data: { name },
+      data: { name, yardageRatePerHeadDay, medicineMarkupPercent, billingNotes, billingAddress },
     })
 
     revalidatePath("/dashboard/stocker/owners")
@@ -63,6 +127,11 @@ export default async function OwnersPage() {
     "use server"
 
     await requireModuleForOrganization(orgId, ModuleKey.STOCKER)
+    await requireRole({
+      userId: core.user.id,
+      organizationId: orgId,
+      allowedRoles: [ROLE_OWNER, ROLE_MANAGER],
+    })
     const ownerId = formData.get("ownerId")?.toString()
     if (!ownerId) return
 
@@ -90,48 +159,198 @@ export default async function OwnersPage() {
 
   return (
     <main style={pageStyle}>
-      <h1 style={{ marginTop: 0 }}>Owners</h1>
+      <PageHeader
+        title="Owners"
+        subtitle="Manage cattle ownership groups across the yard."
+        badge="Stocker"
+      />
+      <StatusRow
+        organizationName={core.organization.name}
+        roleLabel={getRoleDisplayName(core.role)}
+      />
+      <ActionBar primaryAction={{ href: "#new-owner", label: "+ New Owner" }} />
 
-      <section style={cardStyle}>
-        <h2 style={{ marginTop: 0 }}>Add Owner</h2>
-        <form action={createOwner} style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-          <input name="name" placeholder="Owner name" style={{ ...inputStyle, flex: "1 1 240px" }} />
-          <button type="submit" style={buttonStyle}>
-            Save Owner
-          </button>
+      <CardSection id="new-owner" title="New Owner">
+        <form action={createOwner} style={{ ...stackStyle, maxWidth: 680 }}>
+          <Input label="Owner Name" name="name" placeholder="Walton Marshall" required style={inputStyle} />
+          <Input
+            label="Yardage Rate ($ per head/day)"
+            name="yardageRatePerHeadDay"
+            placeholder="3.00"
+            inputMode="decimal"
+            type="number"
+            min="0"
+            step="0.01"
+            style={inputStyle}
+          />
+          <Input
+            label="Medicine Markup %"
+            name="medicineMarkupPercent"
+            placeholder="0"
+            defaultValue="0"
+            inputMode="decimal"
+            type="number"
+            min="0"
+            step="0.01"
+            style={inputStyle}
+          />
+          <Textarea
+            label="Billing Notes"
+            name="billingNotes"
+            placeholder="Internal billing notes for invoices and owner review."
+            rows={4}
+            style={{ ...inputStyle, resize: "vertical" }}
+          />
+          <Textarea
+            label="Billing Address"
+            name="billingAddress"
+            placeholder={"Walton Marshall\n123 Ranch Road\nAustin, TX 78701"}
+            rows={4}
+            style={{ ...inputStyle, resize: "vertical" }}
+          />
+          <div>
+            <Button type="submit" variant="primary">
+              Save Owner
+            </Button>
+          </div>
         </form>
-      </section>
+      </CardSection>
 
-      <section style={{ marginTop: 20, display: "grid", gap: 12 }}>
+      <CardSection title="Owner Directory">
         {owners.length === 0 ? (
-          <p>No owners yet.</p>
+          <div className="stocker-empty-state" style={emptyStateStyle}>
+            <strong style={{ display: "block", marginBottom: 8 }}>No owners yet.</strong>
+            Create your first owner to start tracking cattle inventory.
+          </div>
         ) : (
-          owners.map((owner) => (
-            <article key={owner.id} style={cardStyle}>
-              <form action={updateOwner} style={{ display: "grid", gap: 12 }}>
-                <input type="hidden" name="ownerId" value={owner.id} />
-                <div>
-                  <div style={{ fontSize: 12, opacity: 0.7 }}>Lots: {owner._count.lots}</div>
-                  <div style={{ fontSize: 12, opacity: 0.7 }}>Invoices: {owner._count.invoices}</div>
-                </div>
-                <input name="name" defaultValue={owner.name} style={inputStyle} />
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  <button type="submit" style={buttonStyle}>
-                    Update
-                  </button>
-                </div>
-              </form>
-
-              <form action={deleteOwner} style={{ marginTop: 10 }}>
-                <input type="hidden" name="ownerId" value={owner.id} />
-                <button type="submit" style={secondaryButtonStyle}>
-                  Delete
-                </button>
-              </form>
-            </article>
-          ))
+          <>
+            <div className="stocker-mobile-cards">
+              {owners.map((owner) => (
+                <Card key={owner.id} style={cardStyle}>
+                  <div style={{ fontWeight: 700, color: "var(--stocker-navy)" }}>{owner.name}</div>
+                  <div style={{ ...metaTextStyle, marginTop: 8 }}>Lots: {owner._count.lots}</div>
+                  <div style={{ ...metaTextStyle, marginTop: 6 }}>Inventory: {inventoryByOwner.get(owner.id) ?? 0}</div>
+                  <div style={{ ...metaTextStyle, marginTop: 6 }}>
+                    Yardage: {owner.yardageRatePerHeadDay === null ? "Not set" : `$${owner.yardageRatePerHeadDay.toFixed(2)} / head-day`}
+                  </div>
+                  <div style={{ ...metaTextStyle, marginTop: 6 }}>Medicine markup: {owner.medicineMarkupPercent.toFixed(2)}%</div>
+                  <div style={{ ...metaTextStyle, marginTop: 6 }}>Invoices: {owner._count.invoices}</div>
+                  <div style={{ ...metaTextStyle, marginTop: 6 }}>
+                    Billing address: {owner.billingAddress ? "On file" : "Not set"}
+                  </div>
+                </Card>
+              ))}
+            </div>
+            <Card className="stocker-desktop-table" style={tableContainerStyle}>
+              <Table>
+                <thead>
+                  <tr style={{ textAlign: "left" }}>
+                    <th style={{ padding: "8px 0" }}>Owner</th>
+                    <th style={{ padding: "8px 0" }} data-align="right">Lots</th>
+                    <th style={{ padding: "8px 0" }} data-align="right">Current Inventory</th>
+                    <th style={{ padding: "8px 0" }} data-align="right">Yardage Rate</th>
+                    <th style={{ padding: "8px 0" }} data-align="right">Medicine Markup</th>
+                    <th style={{ padding: "8px 0" }} data-align="right">Invoices</th>
+                    <th style={{ padding: "8px 0" }}>Billing Address</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {owners.map((owner) => (
+                    <tr key={owner.id}>
+                      <td style={{ padding: "10px 0", fontWeight: 700 }}>{owner.name}</td>
+                      <td style={{ padding: "10px 0" }} data-align="right">{owner._count.lots}</td>
+                      <td style={{ padding: "10px 0" }} data-align="right">{inventoryByOwner.get(owner.id) ?? 0}</td>
+                      <td style={{ padding: "10px 0" }} data-align="right">
+                        {owner.yardageRatePerHeadDay === null ? "Not set" : `$${owner.yardageRatePerHeadDay.toFixed(2)} / head-day`}
+                      </td>
+                      <td style={{ padding: "10px 0" }} data-align="right">{owner.medicineMarkupPercent.toFixed(2)}%</td>
+                      <td style={{ padding: "10px 0" }} data-align="right">{owner._count.invoices}</td>
+                      <td style={{ padding: "10px 0" }}>{owner.billingAddress ? "On file" : "Not set"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </Table>
+            </Card>
+          </>
         )}
-      </section>
+      </CardSection>
+
+      <CardSection title="Edit Owner Profiles">
+        {owners.length === 0 ? (
+          <div className="stocker-empty-state" style={emptyStateStyle}>No owners to edit yet.</div>
+        ) : (
+          <div style={stackStyle}>
+            {owners.map((owner) => (
+              <article key={owner.id} className="stocker-card" style={cardStyle}>
+                <form action={updateOwner} style={stackStyle}>
+                  <input type="hidden" name="ownerId" value={owner.id} />
+                  <div style={gridStyle}>
+                    <Input label="Owner Name" name="name" defaultValue={owner.name} required style={inputStyle} />
+                    <Input
+                      label="Yardage Rate ($ per head/day)"
+                      name="yardageRatePerHeadDay"
+                      defaultValue={owner.yardageRatePerHeadDay ?? ""}
+                      inputMode="decimal"
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      style={inputStyle}
+                    />
+                  <Input
+                    label="Medicine Markup %"
+                    name="medicineMarkupPercent"
+                      defaultValue={owner.medicineMarkupPercent}
+                      inputMode="decimal"
+                      type="number"
+                      min="0"
+                    step="0.01"
+                    style={inputStyle}
+                  />
+                  <Textarea
+                    label="Billing Address"
+                    name="billingAddress"
+                    rows={3}
+                    defaultValue={owner.billingAddress ?? ""}
+                    style={{ ...inputStyle, resize: "vertical" }}
+                  />
+                </div>
+                <Textarea
+                  label="Billing Notes"
+                    name="billingNotes"
+                    defaultValue={owner.billingNotes ?? ""}
+                    rows={3}
+                    style={{ ...inputStyle, resize: "vertical" }}
+                  />
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <Button type="submit" variant="primary">
+                      Update Owner
+                    </Button>
+                  </div>
+                </form>
+
+                <form action={deleteOwner} style={{ marginTop: 10 }}>
+                  <input type="hidden" name="ownerId" value={owner.id} />
+                  <Button type="submit" variant="secondary">
+                    Delete
+                  </Button>
+                </form>
+              </article>
+            ))}
+          </div>
+        )}
+      </CardSection>
     </main>
   )
+}
+
+function parseNullableNumber(value: FormDataEntryValue | null) {
+  const raw = value?.toString().trim()
+  if (!raw) return null
+
+  const parsed = Number(raw)
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`Invalid number: ${raw}`)
+  }
+
+  return parsed
 }

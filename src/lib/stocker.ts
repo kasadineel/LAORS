@@ -1,8 +1,9 @@
 import { currentUser } from "@clerk/nextjs/server"
-import { ModuleKey } from "@prisma/client"
+import { MembershipRole, ModuleKey } from "@prisma/client"
 import { redirect } from "next/navigation"
 import { ensureCore } from "@/lib/ensure-core"
 import { requireModuleForOrganization } from "@/lib/module-entitlements"
+import { requireRole, ROLE_MANAGER, ROLE_OWNER, ROLE_WORKER, type RoleValue } from "@/lib/permissions"
 
 const DAY_IN_MS = 24 * 60 * 60 * 1000
 
@@ -60,6 +61,19 @@ export function getMonthWindow(monthParam?: string) {
   }
 }
 
+export function sanitizeReturnTo(value?: string | null) {
+  if (!value || !value.startsWith("/dashboard/stocker")) {
+    return "/dashboard/stocker"
+  }
+
+  return value
+}
+
+export function appendStockerSavedParam(returnTo: string, action: string) {
+  const separator = returnTo.includes("?") ? "&" : "?"
+  return `${returnTo}${separator}stockerSaved=${encodeURIComponent(action)}`
+}
+
 export function calculateHeadDaysForLot(
   arrivalDate: Date,
   exitDate: Date | null,
@@ -80,7 +94,9 @@ export function calculateHeadDaysForLot(
   return days * headCount
 }
 
-export async function requireStockerAccess() {
+export async function requireStockerAccess(
+  allowedRoles: RoleValue[] = [ROLE_OWNER, ROLE_MANAGER, ROLE_WORKER],
+) {
   const user = await currentUser()
   if (!user) redirect("/sign-in")
 
@@ -91,6 +107,14 @@ export async function requireStockerAccess() {
   })
 
   await requireModuleForOrganization(core.activeOrganizationId, ModuleKey.STOCKER)
+  const role = await requireRole({
+    userId: core.user.id,
+    organizationId: core.activeOrganizationId,
+    allowedRoles,
+  })
 
-  return core
+  return {
+    ...core,
+    role,
+  }
 }

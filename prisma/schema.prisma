@@ -12,6 +12,73 @@ enum ModuleKey {
   STOCKER
 }
 
+enum MembershipRole {
+  OWNER
+  MANAGER
+  WORKER
+}
+
+enum StockerActivityType {
+  INTAKE
+  MOVE
+  SPLIT
+  CLOSE_LOT
+  LOT_ADJUSTMENT
+  TREATMENT
+  INVOICE_CREATED
+}
+
+enum MedicineBillingMode {
+  PASS_THROUGH
+  PASS_THROUGH_WITH_MARKUP
+  FIXED_CHARGE
+}
+
+enum LotAdjustmentType {
+  DEATH_LOSS
+  OWNER_PICKUP
+  SHIPMENT_OUT
+  ADDITION
+  COUNT_CORRECTION
+  OTHER
+}
+
+enum LotAdjustmentDirection {
+  IN
+  OUT
+}
+
+enum LotLedgerEventType {
+  INTAKE
+  ADJUSTMENT
+  SPLIT_OUT
+  SPLIT_IN
+  OWNER_PICKUP
+  DEATH_LOSS
+  ADDITION
+  MOVE
+  CLOSE
+  SHIPMENT_OUT
+  COUNT_CORRECTION
+}
+
+enum InvoiceStatus {
+  DRAFT
+  FINALIZED
+  VOID
+}
+
+enum InvoiceLineSource {
+  YARDAGE
+  FEED
+  TREATMENT
+  MANUAL
+}
+
+enum FeedEntryUnit {
+  LBS
+}
+
 model Organization {
   id          String        @id @default(cuid())
   name        String
@@ -21,9 +88,16 @@ model Organization {
   memberships Membership[]
   modules     OrganizationModule[]
   owners      Owner[]
+  medicines   Medicine[]
+  rationCosts RationCost[]
+  feedEntries FeedEntry[]
+  feedAllocationRules FeedAllocationRule[]
   pens        Pen[]
   lots        Lot[]
+  lotAdjustments LotAdjustment[]
+  lotLedgerEvents LotEventLedger[]
   invoices    Invoice[]
+  stockerActivities StockerActivity[]
   animals     Animal[]
   events      Event[]
 
@@ -53,11 +127,17 @@ model User {
 
   memberships Membership[]
   events      Event[]       @relation("EventCreator")
+  stockerActivities StockerActivity[] @relation("StockerActivityCreator")
+  lotAdjustments LotAdjustment[] @relation("LotAdjustmentCreator")
+  lotLedgerEvents LotEventLedger[] @relation("LotEventLedgerCreator")
+  finalizedInvoices Invoice[] @relation("InvoiceFinalizer")
+  feedEntries FeedEntry[] @relation("FeedEntryCreator")
 }
 
 model Membership {
   id              String        @id @default(cuid())
-  role            String        // OWNER | ADMIN | MEMBER
+  role            MembershipRole @default(WORKER)
+  active          Boolean       @default(true)
 
   user            User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   userId          String
@@ -77,6 +157,11 @@ model Owner {
   organization    Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   organizationId  String
   name            String
+  yardageRatePerHeadDay Float?
+  medicineMarkupPercent Float       @default(0)
+  billingNotes    String?
+  billingAddress  String?
+  feedAllocationRules FeedAllocationRule[]
   lots            Lot[]
   invoices        Invoice[]
   createdAt       DateTime      @default(now())
@@ -91,6 +176,8 @@ model Pen {
   organizationId  String
   name            String
   capacity        Int?
+  feedEntries     FeedEntry[]
+  feedAllocationRules FeedAllocationRule[]
   lots            Lot[]
   outgoingMoves   LotMove[]     @relation("LotMoveFromPen")
   incomingMoves   LotMove[]     @relation("LotMoveToPen")
@@ -109,10 +196,16 @@ model Lot {
   pen             Pen           @relation(fields: [penId], references: [id], onDelete: Restrict)
   penId           String
   headCount       Int
+  inHeadCount     Int?
+  inTotalWeight   Float?
+  outHeadCount    Int?
+  outTotalWeight  Float?
   arrivalDate     DateTime
   exitDate        DateTime?
   notes           String?
   moves           LotMove[]
+  adjustments     LotAdjustment[]
+  ledgerEvents    LotEventLedger[]
   treatments      Treatment[]
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
@@ -140,12 +233,145 @@ model LotMove {
   @@index([moveDate])
 }
 
+model LotAdjustment {
+  id              String                 @id @default(cuid())
+  organization    Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organizationId  String
+  lot             Lot                    @relation(fields: [lotId], references: [id], onDelete: Cascade)
+  lotId           String
+  type            LotAdjustmentType
+  direction       LotAdjustmentDirection
+  quantity        Int
+  adjustmentDate  DateTime
+  notes           String?
+  createdBy       User?                  @relation("LotAdjustmentCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdById     String?
+  createdAt       DateTime               @default(now())
+
+  @@index([lotId])
+  @@index([organizationId])
+  @@index([adjustmentDate])
+}
+
+model LotEventLedger {
+  id              String             @id @default(cuid())
+  organization    Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organizationId  String
+  lot             Lot                @relation(fields: [lotId], references: [id], onDelete: Cascade)
+  lotId           String
+  eventType       LotLedgerEventType
+  eventDate       DateTime
+  headChange      Int
+  headAfter       Int
+  notes           String?
+  createdBy       User?              @relation("LotEventLedgerCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdById     String?
+  relatedLotId    String?
+  relatedOwnerId  String?
+  relatedPenId    String?
+  metadata        Json?
+  createdAt       DateTime           @default(now())
+
+  @@index([lotId, eventDate])
+  @@index([organizationId, eventDate])
+}
+
+model Medicine {
+  id              String              @id @default(cuid())
+  organization    Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organizationId  String
+  name            String
+  unitLabel       String              @default("cc")
+  costPerUnit     Float
+  billingMode     MedicineBillingMode @default(PASS_THROUGH)
+  chargePerUnit   Float?
+  isActive        Boolean             @default(true)
+  notes           String?
+  treatments      Treatment[]
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  @@index([organizationId])
+  @@index([organizationId, isActive])
+  @@index([organizationId, name])
+}
+
+model RationCost {
+  id                String        @id @default(cuid())
+  organization      Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organizationId    String
+  name              String
+  costPerTon        Float
+  effectiveStartDate DateTime
+  effectiveEndDate  DateTime?
+  isActive          Boolean       @default(true)
+  notes             String?
+  feedEntries       FeedEntry[]
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  @@index([organizationId, effectiveStartDate])
+  @@index([organizationId, isActive])
+  @@index([organizationId, name])
+}
+
+model FeedEntry {
+  id                String         @id @default(cuid())
+  organization      Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organizationId    String
+  pen               Pen            @relation(fields: [penId], references: [id], onDelete: Restrict)
+  penId             String
+  entryDate         DateTime
+  ration            RationCost     @relation(fields: [rationId], references: [id], onDelete: Restrict)
+  rationId          String
+  amount            Float
+  unit              FeedEntryUnit  @default(LBS)
+  costPerTonSnapshot Float
+  totalCostSnapshot Float
+  notes             String?
+  createdBy         User?          @relation("FeedEntryCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdById       String?
+  createdAt         DateTime       @default(now())
+
+  @@index([organizationId, entryDate])
+  @@index([penId, entryDate])
+  @@index([rationId])
+}
+
+model FeedAllocationRule {
+  id                String        @id @default(cuid())
+  organization      Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organizationId    String
+  pen               Pen           @relation(fields: [penId], references: [id], onDelete: Cascade)
+  penId             String
+  owner             Owner         @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  ownerId           String
+  allocationPercent Float
+  effectiveStartDate DateTime
+  effectiveEndDate  DateTime?
+  notes             String?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  @@index([organizationId, effectiveStartDate])
+  @@index([penId, effectiveStartDate])
+  @@index([ownerId, effectiveStartDate])
+}
+
 model Treatment {
   id              String        @id @default(cuid())
   lot             Lot           @relation(fields: [lotId], references: [id], onDelete: Cascade)
   lotId           String
   medicine        String
+  medicineRecord  Medicine?     @relation(fields: [medicineId], references: [id], onDelete: SetNull)
+  medicineId      String?
+  headTreated     Int?
   dosePerHead     Float
+  totalUnitsUsed  Float?
+  costPerUnitSnapshot   Float?
+  billingModeSnapshot   MedicineBillingMode?
+  chargePerUnitSnapshot Float?
+  billableAmount        Float?
   date            DateTime
   notes           String?
   createdAt       DateTime      @default(now())
@@ -153,6 +379,7 @@ model Treatment {
 
   @@index([lotId])
   @@index([date])
+  @@index([medicineId])
 }
 
 model Invoice {
@@ -162,7 +389,12 @@ model Invoice {
   organization    Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   organizationId  String
   date            DateTime
+  billingMonth    String?
+  status          InvoiceStatus @default(DRAFT)
   total           Float
+  finalizedAt     DateTime?
+  finalizedBy     User?         @relation("InvoiceFinalizer", fields: [finalizedById], references: [id], onDelete: SetNull)
+  finalizedById   String?
   lines           InvoiceLine[]
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
@@ -170,12 +402,16 @@ model Invoice {
   @@index([organizationId])
   @@index([ownerId])
   @@index([date])
+  @@index([ownerId, billingMonth])
+  @@index([organizationId, billingMonth, status])
 }
 
 model InvoiceLine {
   id              String        @id @default(cuid())
   invoice         Invoice       @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
   invoiceId       String
+  source          InvoiceLineSource @default(MANUAL)
+  generated       Boolean       @default(false)
   quantity        Float
   description     String
   weight          Float?
@@ -185,6 +421,21 @@ model InvoiceLine {
   updatedAt       DateTime      @updatedAt
 
   @@index([invoiceId])
+}
+
+model StockerActivity {
+  id               String              @id @default(cuid())
+  organization     Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organizationId   String
+  type             StockerActivityType
+  message          String
+  metadata         Json?
+  createdBy        User?               @relation("StockerActivityCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  createdByUserId  String?
+  createdAt        DateTime            @default(now())
+
+  @@index([organizationId, createdAt])
+  @@index([createdByUserId])
 }
 
 model Animal {

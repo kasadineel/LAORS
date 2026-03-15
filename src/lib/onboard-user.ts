@@ -1,3 +1,4 @@
+import { MembershipRole } from "@prisma/client"
 import { prisma } from "@/lib/prisma"
 import { clerkClient } from "@clerk/nextjs/server"
 
@@ -29,12 +30,12 @@ export async function ensureUserOrganization(clerkUserId: string) {
   if (existingMembership) return existingMembership.organizationId
 
   const org = await prisma.organization.create({
-    data: { name: "My Ranch" },
+    data: { name: "New Operation" },
   })
 
   await prisma.membership.create({
     data: {
-      role: "OWNER",
+      role: MembershipRole.OWNER,
       userId: dbUser.id,
       organizationId: org.id,
     },

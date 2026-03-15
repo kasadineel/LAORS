@@ -1,28 +1,48 @@
 import { revalidatePath } from "next/cache"
-import { ModuleKey } from "@prisma/client"
-import { prisma } from "@/lib/prisma"
+import { MedicineBillingMode, ModuleKey, StockerActivityType } from "@prisma/client"
+import { ActionBar } from "@/components/stocker/ActionBar"
+import { CardSection } from "@/components/stocker/CardSection"
+import { PageHeader } from "@/components/stocker/PageHeader"
+import { StatusRow } from "@/components/stocker/StatusRow"
+import { TreatmentEntryForm } from "@/components/stocker/treatment-entry-form"
+import { Button } from "@/components/stocker/ui/Button"
+import { logStockerActivity } from "@/lib/stocker-activity"
+import { formatLotLabel } from "@/lib/stocker-labels"
 import { requireModuleForOrganization } from "@/lib/module-entitlements"
-import {
-  parseDateInput,
-  parseNumberInput,
-  requireStockerAccess,
-  toDateInputValue,
-} from "@/lib/stocker"
-import { buttonStyle, cardStyle, gridStyle, inputStyle, pageStyle, secondaryButtonStyle } from "@/lib/stocker-ui"
+import { getRoleDisplayName, requireRole, ROLE_MANAGER, ROLE_OWNER, ROLE_WORKER } from "@/lib/permissions"
+import { getMedicineDelegate, prisma } from "@/lib/prisma"
+import { parseDateInput, parseNumberInput, requireStockerAccess, toDateInputValue } from "@/lib/stocker"
+import { calculateBillableAmount, calculateTotalUnitsUsed, formatMoney, getMedicineBillingModeLabel } from "@/lib/treatment-pricing"
+import { cardStyle, emptyStateStyle, metaTextStyle, pageStyle, stackStyle } from "@/lib/stocker-ui"
 
 export default async function TreatmentsPage() {
-  const core = await requireStockerAccess()
+  const core = await requireStockerAccess([ROLE_OWNER, ROLE_MANAGER, ROLE_WORKER])
   const orgId = core.activeOrganizationId
+  const userId = core.user.id
+  const medicineDelegate = getMedicineDelegate()
 
-  const [lots, treatments] = await Promise.all([
+  const [lots, medicines, treatments] = await Promise.all([
     prisma.lot.findMany({
       where: { organizationId: orgId },
       orderBy: { arrivalDate: "desc" },
       select: {
         id: true,
         headCount: true,
+        arrivalDate: true,
         owner: { select: { name: true } },
         pen: { select: { name: true } },
+      },
+    }),
+    medicineDelegate.findMany({
+      where: { organizationId: orgId, isActive: true },
+      orderBy: { name: "asc" },
+      select: {
+        id: true,
+        name: true,
+        unitLabel: true,
+        costPerUnit: true,
+        billingMode: true,
+        chargePerUnit: true,
       },
     }),
     prisma.treatment.findMany({
@@ -35,12 +55,26 @@ export default async function TreatmentsPage() {
       select: {
         id: true,
         medicine: true,
+        medicineId: true,
+        headTreated: true,
         dosePerHead: true,
+        totalUnitsUsed: true,
+        costPerUnitSnapshot: true,
+        billingModeSnapshot: true,
+        chargePerUnitSnapshot: true,
+        billableAmount: true,
         date: true,
         notes: true,
+        medicineRecord: {
+          select: {
+            unitLabel: true,
+          },
+        },
         lot: {
           select: {
             id: true,
+            headCount: true,
+            arrivalDate: true,
             owner: { select: { name: true } },
             pen: { select: { name: true } },
           },
@@ -53,39 +87,114 @@ export default async function TreatmentsPage() {
     "use server"
 
     await requireModuleForOrganization(orgId, ModuleKey.STOCKER)
+    await requireRole({
+      userId,
+      organizationId: orgId,
+      allowedRoles: [ROLE_OWNER, ROLE_MANAGER, ROLE_WORKER],
+    })
 
     const lotId = formData.get("lotId")?.toString()
-    const medicine = formData.get("medicine")?.toString().trim()
+    const medicineId = formData.get("medicineId")?.toString()
+    const headTreatedValue = parseNumberInput(formData.get("headTreated"))
     const dosePerHead = parseNumberInput(formData.get("dosePerHead"))
     const date = parseDateInput(formData.get("date"), new Date())
     const notes = formData.get("notes")?.toString().trim() || null
 
-    if (!lotId || !medicine || dosePerHead === null || !date) return
+    if (!lotId || !medicineId || headTreatedValue === null || dosePerHead === null || !date) return
 
-    const lot = await prisma.lot.findFirst({
-      where: { id: lotId, organizationId: orgId },
-      select: { id: true },
+    const headTreated = Math.trunc(headTreatedValue)
+    if (headTreated < 1) return
+
+    const [lot, medicine] = await Promise.all([
+      prisma.lot.findFirst({
+        where: { id: lotId, organizationId: orgId },
+        select: {
+          id: true,
+          headCount: true,
+          owner: { select: { name: true } },
+          pen: { select: { name: true } },
+        },
+      }),
+      prisma.medicine.findFirst({
+        where: { id: medicineId, organizationId: orgId, isActive: true },
+        select: {
+          id: true,
+          name: true,
+          unitLabel: true,
+          costPerUnit: true,
+          billingMode: true,
+          chargePerUnit: true,
+        },
+      }),
+    ])
+
+    if (!lot || !medicine || headTreated > lot.headCount) return
+
+    const totalUnitsUsed = calculateTotalUnitsUsed(headTreated, dosePerHead)
+    const billableAmount = calculateBillableAmount({
+      headTreated,
+      dosePerHead,
+      costPerUnit: medicine.costPerUnit,
+      billingMode: medicine.billingMode,
+      chargePerUnit: medicine.chargePerUnit,
     })
 
-    if (!lot) return
+    await prisma.$transaction(async (tx) => {
+      await tx.treatment.create({
+        data: {
+          lotId,
+          medicineId: medicine.id,
+          medicine: medicine.name,
+          headTreated,
+          dosePerHead,
+          totalUnitsUsed,
+          costPerUnitSnapshot: medicine.costPerUnit,
+          billingModeSnapshot: medicine.billingMode,
+          chargePerUnitSnapshot: medicine.chargePerUnit,
+          billableAmount,
+          date,
+          notes,
+        },
+      })
 
-    await prisma.treatment.create({
-      data: {
-        lotId,
-        medicine,
-        dosePerHead,
-        date,
-        notes,
-      },
+      await logStockerActivity(
+        {
+          organizationId: orgId,
+          type: StockerActivityType.TREATMENT,
+          message: `Logged treatment ${medicine.name} for ${lot.owner.name} in ${lot.pen.name}.`,
+          metadata: {
+            lotId: lot.id,
+            ownerName: lot.owner.name,
+            penName: lot.pen.name,
+            medicineId: medicine.id,
+            medicine: medicine.name,
+            headTreated,
+            dosePerHead,
+            totalUnitsUsed,
+            billableAmount,
+            billingMode: medicine.billingMode,
+            date: date.toISOString(),
+            notes,
+          },
+          createdByUserId: userId,
+        },
+        tx,
+      )
     })
 
     revalidatePath("/dashboard/stocker/treatments")
+    revalidatePath("/dashboard/stocker")
   }
 
   async function deleteTreatment(formData: FormData) {
     "use server"
 
     await requireModuleForOrganization(orgId, ModuleKey.STOCKER)
+    await requireRole({
+      userId,
+      organizationId: orgId,
+      allowedRoles: [ROLE_OWNER, ROLE_MANAGER, ROLE_WORKER],
+    })
 
     const treatmentId = formData.get("treatmentId")?.toString()
     if (!treatmentId) return
@@ -104,63 +213,96 @@ export default async function TreatmentsPage() {
 
   return (
     <main style={pageStyle}>
-      <h1 style={{ marginTop: 0 }}>Treatments</h1>
+      <PageHeader
+        title="Treatments"
+        subtitle="Log medicine usage by lot with automatic usage totals, billable cost, and historical pricing snapshots."
+        badge="Stocker"
+      />
+      <StatusRow organizationName={core.organization.name} roleLabel={getRoleDisplayName(core.role)} />
+      <ActionBar
+        primaryAction={{ href: "#log-treatment", label: "+ Log Treatment" }}
+        secondaryActions={core.role === ROLE_WORKER ? [] : [{ href: "/dashboard/stocker/medicine", label: "Medicine Library" }]}
+      />
 
-      <section style={cardStyle}>
-        <h2 style={{ marginTop: 0 }}>Log Treatment</h2>
+      <CardSection id="log-treatment" title="Log Treatment">
         {lots.length === 0 ? (
-          <p>Create a lot before logging treatments.</p>
+          <div className="stocker-empty-state" style={emptyStateStyle}>Create a lot before logging treatments.</div>
+        ) : medicines.length === 0 ? (
+          <div className="stocker-empty-state" style={emptyStateStyle}>
+            <strong style={{ display: "block", marginBottom: 8 }}>No active medicines available.</strong>
+            {core.role === ROLE_WORKER
+              ? "Ask an owner or manager to add medicines before logging treatments."
+              : "Create a medicine in the library before logging treatments."}
+          </div>
         ) : (
-          <form action={createTreatment} style={{ display: "grid", gap: 12 }}>
-            <div style={gridStyle}>
-              <select name="lotId" defaultValue="" style={inputStyle}>
-                <option value="" disabled>
-                  Select lot
-                </option>
-                {lots.map((lot) => (
-                  <option key={lot.id} value={lot.id}>
-                    {lot.owner.name} / {lot.pen.name} / {lot.headCount} head
-                  </option>
-                ))}
-              </select>
-              <input name="medicine" placeholder="Medicine" style={inputStyle} />
-              <input name="dosePerHead" placeholder="Dose per head" inputMode="decimal" style={inputStyle} />
-              <input name="date" type="date" defaultValue={toDateInputValue(new Date())} style={inputStyle} />
-            </div>
-            <textarea name="notes" rows={3} placeholder="Notes" style={inputStyle} />
-            <div>
-              <button type="submit" style={buttonStyle}>
-                Save Treatment
-              </button>
-            </div>
-          </form>
+          <TreatmentEntryForm
+            action={createTreatment}
+            lots={lots.map((lot) => ({
+              id: lot.id,
+              arrivalDate: lot.arrivalDate,
+              headCount: lot.headCount,
+              ownerName: lot.owner.name,
+              penName: lot.pen.name,
+            }))}
+            medicines={medicines}
+            defaultDate={toDateInputValue(new Date())}
+          />
         )}
-      </section>
+      </CardSection>
 
-      <section style={{ marginTop: 20, display: "grid", gap: 12 }}>
+      <CardSection title="Treatment Log">
         {treatments.length === 0 ? (
-          <p>No treatments logged yet.</p>
+          <div className="stocker-empty-state" style={emptyStateStyle}>
+            <strong style={{ display: "block", marginBottom: 8 }}>No treatments logged.</strong>
+            Log your first treatment to begin recording medicine usage.
+          </div>
         ) : (
-          treatments.map((treatment) => (
-            <article key={treatment.id} style={cardStyle}>
-              <div style={{ fontWeight: 600 }}>{treatment.medicine}</div>
-              <div style={{ fontSize: 14, marginTop: 6 }}>
-                {treatment.lot.owner.name} / {treatment.lot.pen.name}
-              </div>
-              <div style={{ fontSize: 12, opacity: 0.7, marginTop: 6 }}>
-                Dose: {treatment.dosePerHead} | Date: {treatment.date.toLocaleDateString()}
-              </div>
-              {treatment.notes ? <p style={{ marginBottom: 0 }}>{treatment.notes}</p> : null}
-              <form action={deleteTreatment} style={{ marginTop: 12 }}>
-                <input type="hidden" name="treatmentId" value={treatment.id} />
-                <button type="submit" style={secondaryButtonStyle}>
-                  Delete
-                </button>
-              </form>
-            </article>
-          ))
+          <div style={stackStyle}>
+            {treatments.map((treatment) => {
+              const unitLabel = treatment.medicineRecord?.unitLabel ?? "cc"
+              const billingMode = treatment.billingModeSnapshot ?? MedicineBillingMode.PASS_THROUGH
+
+              return (
+                <article key={treatment.id} className="stocker-card" style={cardStyle}>
+                  <div style={{ fontWeight: 700, color: "var(--stocker-navy)" }}>{treatment.medicine}</div>
+                  <div style={{ fontSize: 14, marginTop: 6 }}>
+                    {formatLotLabel({
+                      ownerName: treatment.lot.owner.name,
+                      penName: treatment.lot.pen.name,
+                      arrivalDate: treatment.lot.arrivalDate,
+                    })}
+                  </div>
+                  <div style={{ ...metaTextStyle, marginTop: 6 }}>
+                    Dose: {treatment.dosePerHead} {unitLabel} per head | Date: {treatment.date.toLocaleDateString()}
+                  </div>
+                  {treatment.headTreated !== null ? (
+                    <div style={{ ...metaTextStyle, marginTop: 6 }}>
+                      Head treated: {treatment.headTreated} | Total {unitLabel} used: {treatment.totalUnitsUsed?.toFixed(2) ?? "—"}
+                    </div>
+                  ) : (
+                    <div style={{ ...metaTextStyle, marginTop: 6 }}>
+                      Legacy treatment record without head treated or pricing snapshot fields.
+                    </div>
+                  )}
+                  {treatment.billableAmount !== null ? (
+                    <div style={{ ...metaTextStyle, marginTop: 6 }}>
+                      Billable amount: {formatMoney(treatment.billableAmount)} | Billing mode: {getMedicineBillingModeLabel(billingMode)}
+                      {" "} | Cost snapshot: {formatMoney(treatment.costPerUnitSnapshot)}
+                    </div>
+                  ) : null}
+                  {treatment.notes ? <p style={{ marginBottom: 0 }}>{treatment.notes}</p> : null}
+                  <form action={deleteTreatment} style={{ marginTop: 12 }}>
+                    <input type="hidden" name="treatmentId" value={treatment.id} />
+                    <Button type="submit" variant="secondary">
+                      Delete
+                    </Button>
+                  </form>
+                </article>
+              )
+            })}
+          </div>
         )}
-      </section>
+      </CardSection>
     </main>
   )
 }

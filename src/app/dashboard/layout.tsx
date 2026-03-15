@@ -1,9 +1,10 @@
-import Link from "next/link"
 import { auth, currentUser } from "@clerk/nextjs/server"
 import { redirect } from "next/navigation"
 import { ModuleKey } from "@prisma/client"
+import { Button } from "@/components/stocker/ui/Button"
 import { ensureCore } from "@/lib/ensure-core"
 import { isModuleEnabledForOrganization } from "@/lib/module-entitlements"
+import { canManageModules, getRoleDisplayName } from "@/lib/permissions"
 
 export default async function DashboardLayout({
   children,
@@ -30,6 +31,7 @@ export default async function DashboardLayout({
   return (
     <div style={{ minHeight: "100vh" }}>
       <header
+        className="dashboard-shell-header"
         style={{
           padding: 24,
           borderBottom: "1px solid #e5e7eb",
@@ -41,12 +43,25 @@ export default async function DashboardLayout({
       >
         <div>
           <strong>LAORS</strong>
-          <div style={{ fontSize: 12, opacity: 0.7 }}>{core.organization.name}</div>
+          <div style={{ fontSize: 12, opacity: 0.7, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <span>{core.organization.name}</span>
+            <span
+              style={{
+                padding: "4px 8px",
+                borderRadius: 999,
+                background: "rgba(11, 45, 69, 0.08)",
+                color: "#0B2D45",
+                fontWeight: 600,
+              }}
+            >
+              {getRoleDisplayName(core.membership.role)}
+            </span>
+          </div>
         </div>
 
-        <nav style={{ display: "flex", gap: 16, alignItems: "center" }}>
-          {stockerEnabled ? <Link href="/dashboard/stocker">Stocker</Link> : null}
-          <Link href="/dashboard/settings/modules">Settings</Link>
+        <nav className="stocker-ui-topnav dashboard-shell-nav">
+          {stockerEnabled ? <Button href="/dashboard/stocker" variant="secondary" size="sm">Stocker</Button> : null}
+          {canManageModules(core.membership.role) ? <Button href="/dashboard/settings/modules" variant="ghost" size="sm">Settings</Button> : null}
         </nav>
       </header>
 
