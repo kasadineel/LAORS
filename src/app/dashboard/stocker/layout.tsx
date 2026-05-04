@@ -12,18 +12,23 @@ export default async function StockerLayout({
 }) {
   const { role } = await requireStockerAccess()
   const canManage = canManageStocker(role)
-  const items = [
-    { href: "/dashboard/stocker", label: "Summary" },
-    ...(canManage ? [{ href: "/dashboard/stocker/owners", label: "Owners" }] : []),
-    ...(canManage ? [{ href: "/dashboard/stocker/pens", label: "Pens" }] : []),
-    ...(canManage ? [{ href: "/dashboard/stocker/feed", label: "Feed" }] : []),
-    ...(canManage ? [{ href: "/dashboard/stocker/lots", label: "Lots" }] : []),
-    ...(canManage ? [{ href: "/dashboard/stocker/medicine", label: "Medicine" }] : []),
-    { href: "/dashboard/stocker/treatments", label: "Treatments" },
-    ...(canManage ? [{ href: "/dashboard/stocker/employees", label: "Employees" }] : []),
-    ...(canManage ? [{ href: "/dashboard/stocker/invoices", label: "Invoices" }] : []),
-    ...(canManage ? [{ href: "/dashboard/stocker/reports", label: "Reports" }] : []),
+  const primaryItems = [
+    { href: "/dashboard/stocker", label: "Overview" },
+    ...(canManage ? [{ href: "/dashboard/stocker/lots#intake-lot", label: "Receive Cattle" }] : []),
+    ...(canManage ? [{ href: "/dashboard/stocker/lots#active-lots", label: "Work Lots" }] : []),
+    { href: "/dashboard/stocker/treatments", label: "Treat Cattle" },
+    ...(canManage ? [{ href: "/dashboard/stocker/feed", label: "Feed Yard" }] : []),
+    ...(canManage ? [{ href: "/dashboard/stocker/reports", label: "Review Billing" }] : []),
   ]
+  const billingItems = canManage ? [{ href: "/dashboard/stocker/invoices", label: "Invoices" }] : []
+  const setupItems = canManage
+    ? [
+        { href: "/dashboard/stocker/owners", label: "Owners" },
+        { href: "/dashboard/stocker/pens", label: "Pens" },
+        { href: "/dashboard/stocker/medicine", label: "Medicine" },
+        { href: "/dashboard/stocker/employees", label: "Employees" },
+      ]
+    : []
 
   return (
     <div className="stocker-shell">
@@ -61,7 +66,47 @@ export default async function StockerLayout({
           ) : null}
         </div>
         <div style={{ width: "100%" }}>
-          <Tabs items={items} />
+          <Tabs items={primaryItems} />
+          {billingItems.length > 0 ? (
+            <div
+              style={{
+                display: "flex",
+                gap: 8,
+                flexWrap: "wrap",
+                alignItems: "center",
+                marginTop: 10,
+              }}
+            >
+              <span style={{ color: "var(--muted)", fontSize: 12, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase" }}>
+                Billing Docs
+              </span>
+              {billingItems.map((item) => (
+                <Button key={item.href} href={item.href} variant="ghost" size="sm">
+                  {item.label}
+                </Button>
+              ))}
+            </div>
+          ) : null}
+          {setupItems.length > 0 ? (
+            <div
+              style={{
+                display: "flex",
+                gap: 8,
+                flexWrap: "wrap",
+                alignItems: "center",
+                marginTop: 10,
+              }}
+            >
+              <span style={{ color: "var(--muted)", fontSize: 12, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase" }}>
+                Setup & Records
+              </span>
+              {setupItems.map((item) => (
+                <Button key={item.href} href={item.href} variant="ghost" size="sm">
+                  {item.label}
+                </Button>
+              ))}
+            </div>
+          ) : null}
         </div>
       </div>
       <QuickActionsBar canManage={canManage} />

@@ -200,6 +200,69 @@ export default async function EmployeesPage() {
     revalidatePath("/dashboard/stocker")
   }
 
+  async function removeEmployeeAccess(formData: FormData) {
+    "use server"
+
+    await requireModuleForOrganization(orgId, ModuleKey.STOCKER)
+    const actorRole = await requireRole({
+      userId: core.user.id,
+      organizationId: orgId,
+      allowedRoles: [ROLE_OWNER, ROLE_MANAGER],
+    })
+
+    const membershipId = formData.get("membershipId")?.toString()
+    if (!membershipId) return
+
+    const target = await prisma.membership.findFirst({
+      where: { id: membershipId, organizationId: orgId },
+      select: {
+        id: true,
+        role: true,
+        userId: true,
+        user: {
+          select: {
+            id: true,
+            clerkUserId: true,
+          },
+        },
+      },
+    })
+
+    if (!target) return
+    if (target.userId === core.user.id) return
+    if (!canManageTarget({ actorRole, targetRole: target.role })) return
+
+    if (target.role === MembershipRole.OWNER) {
+      const ownerCount = await prisma.membership.count({
+        where: {
+          organizationId: orgId,
+          role: MembershipRole.OWNER,
+        },
+      })
+
+      if (ownerCount <= 1) return
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.membership.delete({
+        where: { id: target.id },
+      })
+
+      const remainingMemberships = await tx.membership.count({
+        where: { userId: target.userId },
+      })
+
+      if (remainingMemberships === 0 && target.user.clerkUserId.startsWith("pending:")) {
+        await tx.user.delete({
+          where: { id: target.user.id },
+        })
+      }
+    })
+
+    revalidatePath("/dashboard/stocker/employees")
+    revalidatePath("/dashboard/stocker")
+  }
+
   const canEditEmployees = canManageEmployees(core.role)
   const assignableRoles =
     core.role === ROLE_OWNER
@@ -210,39 +273,38 @@ export default async function EmployeesPage() {
     <main style={pageStyle}>
       <PageHeader
         title="Employees"
-        subtitle="Manage who can access the yard system, what role they hold, and whether their access is active."
+        subtitle="Review who has access first. Open employee setup only when you need to invite or change permissions."
         badge="Stocker"
       />
       <StatusRow
         organizationName={core.organization.name}
         roleLabel={getRoleDisplayName(core.role)}
       />
-      <ActionBar primaryAction={{ href: "#invite-employee", label: "Invite Employee" }} />
+      <ActionBar
+        primaryAction={{ href: "#employee-directory", label: "Employee Directory" }}
+        secondaryActions={[{ href: "#employee-setup", label: "Employee Setup" }]}
+      />
 
-      <CardSection id="invite-employee" title="Invite Employee">
-        <form action={inviteEmployee} style={{ ...stackStyle, maxWidth: 720 }}>
-          <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
-            <Input label="Email" name="email" type="email" placeholder="operator@ranch.com" required style={inputStyle} />
-            <Select label="Role" name="role" defaultValue={MembershipRole.WORKER} style={inputStyle}>
-              {assignableRoles.map((role) => (
-                <option key={role.value} value={role.value}>
-                  {role.label}
-                </option>
-              ))}
-            </Select>
-          </div>
-          <div style={metaTextStyle}>
-            Adding an employee creates organization access immediately and sends a sign-up invitation when Clerk email delivery is available.
-          </div>
-          <div>
-            <Button type="submit" variant="primary">
-              Invite Employee
-            </Button>
-          </div>
-        </form>
+      <CardSection title="Access Priorities">
+        <div style={{ display: "grid", gap: 16, gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
+          {[
+            { label: "People with Access", value: `${memberships.length}`, note: "Membership records tied to this operation." },
+            { label: "Pending Invites", value: `${memberships.filter((membership) => membership.user.clerkUserId.startsWith("pending:")).length}`, note: "Users who still need to complete sign-up." },
+            { label: "Managers", value: `${memberships.filter((membership) => membership.role === MembershipRole.MANAGER).length}`, note: "People who can run operations and billing review." },
+          ].map((item) => (
+            <article key={item.label} className="stocker-card" style={{ ...cardStyle, padding: 18 }}>
+              <div style={{ ...metaTextStyle, textTransform: "uppercase", letterSpacing: "0.08em" }}>{item.label}</div>
+              <div style={{ marginTop: 8, fontSize: 24, fontWeight: 700, color: "var(--ink)" }}>{item.value}</div>
+              <p style={{ margin: "8px 0 0", color: "var(--muted)", lineHeight: 1.6 }}>{item.note}</p>
+            </article>
+          ))}
+        </div>
       </CardSection>
 
-      <CardSection title="Employee Directory">
+      <CardSection id="employee-directory" title="Employee Directory">
+        <p style={{ ...metaTextStyle, marginTop: 0, marginBottom: 16, lineHeight: 1.7 }}>
+          Use this page to confirm who can access the yard, what role they hold, and whether they are active or still pending sign-up.
+        </p>
         {memberships.length === 0 ? (
           <div className="stocker-empty-state" style={emptyStateStyle}>
             No employees are associated with this operation yet.
@@ -261,13 +323,18 @@ export default async function EmployeesPage() {
                     </div>
                     <div style={{ ...metaTextStyle, marginTop: 6 }}>{membership.user.email}</div>
                     <div style={{ ...metaTextStyle, marginTop: 8 }}>Role: {getRoleDisplayName(membership.role)}</div>
-                    <div style={{ ...metaTextStyle, marginTop: 6 }}>Status: Active</div>
+                    <div style={{ ...metaTextStyle, marginTop: 6 }}>Status: {isPending ? "Pending invite" : "Active"}</div>
                     <div style={{ ...metaTextStyle, marginTop: 6 }}>
                       Last Activity: {activity ? formatStockerActivityMessage(activity) : isPending ? "Pending sign-in" : "Not available"}
                     </div>
-                    <div style={{ ...metaTextStyle, marginTop: 12 }}>
-                      Access removal is not available in this schema version.
-                    </div>
+                    {canEditEmployees && membership.userId !== core.user.id && canManageTarget({ actorRole: core.role, targetRole: membership.role }) ? (
+                      <form action={removeEmployeeAccess} style={{ marginTop: 12 }}>
+                        <input type="hidden" name="membershipId" value={membership.id} />
+                        <Button type="submit" variant="secondary" size="sm">
+                          Remove Access
+                        </Button>
+                      </form>
+                    ) : null}
                   </Card>
                 )
               })}
@@ -324,7 +391,7 @@ export default async function EmployeesPage() {
                             getRoleDisplayName(membership.role)
                           )}
                         </td>
-                        <td>Active</td>
+                        <td>{isPending ? "Pending invite" : "Active"}</td>
                         <td>
                           {activity ? (
                             <div style={{ display: "grid", gap: 4 }}>
@@ -336,9 +403,16 @@ export default async function EmployeesPage() {
                           )}
                         </td>
                         <td data-align="right">
-                          <span style={metaTextStyle}>
-                            {canEditTarget ? "Role only" : "No action"}
-                          </span>
+                          {canEditTarget ? (
+                            <form action={removeEmployeeAccess}>
+                              <input type="hidden" name="membershipId" value={membership.id} />
+                              <Button type="submit" variant="secondary" size="sm">
+                                Remove Access
+                              </Button>
+                            </form>
+                          ) : (
+                            <span style={metaTextStyle}>No action</span>
+                          )}
                         </td>
                       </tr>
                     )
@@ -348,6 +422,34 @@ export default async function EmployeesPage() {
             </Card>
           </>
         )}
+      </CardSection>
+
+      <CardSection id="employee-setup" title="Employee Setup">
+        <details className="stocker-disclosure">
+          <summary>Open employee invite form</summary>
+          <div className="stocker-disclosure__body">
+            <form action={inviteEmployee} style={{ ...stackStyle, maxWidth: 720 }}>
+              <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
+                <Input label="Email" name="email" type="email" placeholder="operator@ranch.com" required style={inputStyle} />
+                <Select label="Role" name="role" defaultValue={MembershipRole.WORKER} style={inputStyle}>
+                  {assignableRoles.map((role) => (
+                    <option key={role.value} value={role.value}>
+                      {role.label}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+              <div style={metaTextStyle}>
+                Adding an employee creates organization access immediately and sends a sign-up invitation when Clerk email delivery is available.
+              </div>
+              <div>
+                <Button type="submit" variant="primary">
+                  Invite Employee
+                </Button>
+              </div>
+            </form>
+          </div>
+        </details>
       </CardSection>
     </main>
   )

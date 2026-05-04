@@ -82,6 +82,13 @@ export default async function TreatmentsPage() {
       },
     }),
   ])
+  const openLots = lots.filter((lot) => lot.headCount > 0)
+  const treatmentsThisWeek = treatments.filter((treatment) => {
+    const sevenDaysAgo = new Date()
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
+    return treatment.date >= sevenDaysAgo
+  }).length
+  const billableTreatments = treatments.filter((treatment) => treatment.billableAmount !== null).length
 
   async function createTreatment(formData: FormData) {
     "use server"
@@ -215,14 +222,31 @@ export default async function TreatmentsPage() {
     <main style={pageStyle}>
       <PageHeader
         title="Treatments"
-        subtitle="Log medicine usage by lot with automatic usage totals, billable cost, and historical pricing snapshots."
+        subtitle="Log treatment first, then review medicine history and billing detail only when you need it."
         badge="Stocker"
       />
       <StatusRow organizationName={core.organization.name} roleLabel={getRoleDisplayName(core.role)} />
       <ActionBar
         primaryAction={{ href: "#log-treatment", label: "+ Log Treatment" }}
-        secondaryActions={core.role === ROLE_WORKER ? [] : [{ href: "/dashboard/stocker/medicine", label: "Medicine Library" }]}
+        secondaryActions={core.role === ROLE_WORKER ? [] : [{ href: "#treatment-history", label: "Treatment History" }]}
       />
+
+      <CardSection title="Treatment Priorities">
+        <div style={{ display: "grid", gap: 16, gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
+          {[
+            { label: "Open Lots", value: `${openLots.length}`, note: "Lots currently available for treatment entry." },
+            { label: "Active Medicines", value: `${medicines.length}`, note: medicines.length === 0 ? "No medicines are ready for use." : "Active medicine records are ready to log." },
+            { label: "Treatments This Week", value: `${treatmentsThisWeek}`, note: "Recent treatment activity across the yard." },
+            { label: "Billable Records", value: `${billableTreatments}`, note: "Treatment records currently carrying billable snapshots." },
+          ].map((item) => (
+            <article key={item.label} className="stocker-card" style={{ ...cardStyle, padding: 18 }}>
+              <div style={{ ...metaTextStyle, textTransform: "uppercase", letterSpacing: "0.08em" }}>{item.label}</div>
+              <div style={{ marginTop: 8, fontSize: 24, fontWeight: 700, color: "var(--ink)" }}>{item.value}</div>
+              <p style={{ margin: "8px 0 0", color: "var(--muted)", lineHeight: 1.6 }}>{item.note}</p>
+            </article>
+          ))}
+        </div>
+      </CardSection>
 
       <CardSection id="log-treatment" title="Log Treatment">
         {lots.length === 0 ? (
@@ -250,57 +274,69 @@ export default async function TreatmentsPage() {
         )}
       </CardSection>
 
-      <CardSection title="Treatment Log">
+      <CardSection id="treatment-history" title="Treatment History">
         {treatments.length === 0 ? (
           <div className="stocker-empty-state" style={emptyStateStyle}>
             <strong style={{ display: "block", marginBottom: 8 }}>No treatments logged.</strong>
             Log your first treatment to begin recording medicine usage.
           </div>
         ) : (
-          <div style={stackStyle}>
-            {treatments.map((treatment) => {
-              const unitLabel = treatment.medicineRecord?.unitLabel ?? "cc"
-              const billingMode = treatment.billingModeSnapshot ?? MedicineBillingMode.PASS_THROUGH
+          <details
+            style={{
+              border: "1px solid rgba(16, 42, 67, 0.08)",
+              borderRadius: 16,
+              padding: 14,
+              background: "rgba(255, 255, 255, 0.7)",
+            }}
+          >
+            <summary style={{ cursor: "pointer", fontWeight: 700, color: "var(--ink)" }}>
+              View {treatments.length} treatment record{treatments.length === 1 ? "" : "s"}
+            </summary>
+            <div style={{ display: "grid", gap: 14, marginTop: 14 }}>
+              {treatments.map((treatment) => {
+                const unitLabel = treatment.medicineRecord?.unitLabel ?? "cc"
+                const billingMode = treatment.billingModeSnapshot ?? MedicineBillingMode.PASS_THROUGH
 
-              return (
-                <article key={treatment.id} className="stocker-card" style={cardStyle}>
-                  <div style={{ fontWeight: 700, color: "var(--stocker-navy)" }}>{treatment.medicine}</div>
-                  <div style={{ fontSize: 14, marginTop: 6 }}>
-                    {formatLotLabel({
-                      ownerName: treatment.lot.owner.name,
-                      penName: treatment.lot.pen.name,
-                      arrivalDate: treatment.lot.arrivalDate,
-                    })}
-                  </div>
-                  <div style={{ ...metaTextStyle, marginTop: 6 }}>
-                    Dose: {treatment.dosePerHead} {unitLabel} per head | Date: {treatment.date.toLocaleDateString()}
-                  </div>
-                  {treatment.headTreated !== null ? (
-                    <div style={{ ...metaTextStyle, marginTop: 6 }}>
-                      Head treated: {treatment.headTreated} | Total {unitLabel} used: {treatment.totalUnitsUsed?.toFixed(2) ?? "—"}
+                return (
+                  <article key={treatment.id} className="stocker-card" style={cardStyle}>
+                    <div style={{ fontWeight: 700, color: "var(--stocker-navy)" }}>{treatment.medicine}</div>
+                    <div style={{ fontSize: 14, marginTop: 6 }}>
+                      {formatLotLabel({
+                        ownerName: treatment.lot.owner.name,
+                        penName: treatment.lot.pen.name,
+                        arrivalDate: treatment.lot.arrivalDate,
+                      })}
                     </div>
-                  ) : (
                     <div style={{ ...metaTextStyle, marginTop: 6 }}>
-                      Legacy treatment record without head treated or pricing snapshot fields.
+                      Dose: {treatment.dosePerHead} {unitLabel} per head | Date: {treatment.date.toLocaleDateString()}
                     </div>
-                  )}
-                  {treatment.billableAmount !== null ? (
-                    <div style={{ ...metaTextStyle, marginTop: 6 }}>
-                      Billable amount: {formatMoney(treatment.billableAmount)} | Billing mode: {getMedicineBillingModeLabel(billingMode)}
-                      {" "} | Cost snapshot: {formatMoney(treatment.costPerUnitSnapshot)}
-                    </div>
-                  ) : null}
-                  {treatment.notes ? <p style={{ marginBottom: 0 }}>{treatment.notes}</p> : null}
-                  <form action={deleteTreatment} style={{ marginTop: 12 }}>
-                    <input type="hidden" name="treatmentId" value={treatment.id} />
-                    <Button type="submit" variant="secondary">
-                      Delete
-                    </Button>
-                  </form>
-                </article>
-              )
-            })}
-          </div>
+                    {treatment.headTreated !== null ? (
+                      <div style={{ ...metaTextStyle, marginTop: 6 }}>
+                        Head treated: {treatment.headTreated} | Total {unitLabel} used: {treatment.totalUnitsUsed?.toFixed(2) ?? "—"}
+                      </div>
+                    ) : (
+                      <div style={{ ...metaTextStyle, marginTop: 6 }}>
+                        Legacy treatment record without head treated or pricing snapshot fields.
+                      </div>
+                    )}
+                    {treatment.billableAmount !== null ? (
+                      <div style={{ ...metaTextStyle, marginTop: 6 }}>
+                        Billable amount: {formatMoney(treatment.billableAmount)} | Billing mode: {getMedicineBillingModeLabel(billingMode)}
+                        {" "} | Cost snapshot: {formatMoney(treatment.costPerUnitSnapshot)}
+                      </div>
+                    ) : null}
+                    {treatment.notes ? <p style={{ marginBottom: 0 }}>{treatment.notes}</p> : null}
+                    <form action={deleteTreatment} style={{ marginTop: 12 }}>
+                      <input type="hidden" name="treatmentId" value={treatment.id} />
+                      <Button type="submit" variant="secondary">
+                        Delete
+                      </Button>
+                    </form>
+                  </article>
+                )
+              })}
+            </div>
+          </details>
         )}
       </CardSection>
     </main>

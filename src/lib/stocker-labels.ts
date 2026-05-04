@@ -223,6 +223,9 @@ export function formatLotLedgerEventMessage({
       }
       break
     case LotLedgerEventType.CLOSE:
+      if (outHeadCount !== null && ownerName && penName) {
+        return `Closeout recorded for ${ownerName} in ${penName} with ${outHeadCount} head out.`
+      }
       if (outHeadCount !== null) {
         return `Closed lot with ${outHeadCount} head out.`
       }
@@ -250,6 +253,8 @@ export function formatStockerActivityMessage({ type, message, metadata }: Stocke
   const headCountMoved = asNumber(data.headCountMoved)
   const quantity = asNumber(data.quantity)
   const total = asNumber(data.total)
+  const outHeadCount = asNumber(data.outHeadCount)
+  const outTotalWeight = asNumber(data.outTotalWeight)
   const typeValue = asString(data.type) as LotAdjustmentType | null
   const direction = asString(data.direction) as LotAdjustmentDirection | null
   const destinationOwnerName = asString(data.destinationOwnerName)
@@ -285,8 +290,14 @@ export function formatStockerActivityMessage({ type, message, metadata }: Stocke
       }
       return message
     case StockerActivityType.CLOSE_LOT:
+      if (ownerName && penName && outHeadCount !== null) {
+        return `Recorded closeout for ${formatLotLabel({ ownerName, penName })} with ${outHeadCount} head out${outTotalWeight !== null ? ` at ${formatTotalWeightLbs(outTotalWeight)}` : ""}.`
+      }
+      if (ownerName && penName && headCount !== null) {
+        return `Recorded closeout for ${formatLotLabel({ ownerName, penName })} with ${headCount} head on lot.`
+      }
       if (ownerName && penName) {
-        return `Closed ${formatLotLabel({ ownerName, penName })}.`
+        return `Recorded closeout for ${formatLotLabel({ ownerName, penName })}.`
       }
       return message
     case StockerActivityType.TREATMENT:

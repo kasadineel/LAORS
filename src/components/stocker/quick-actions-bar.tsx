@@ -4,7 +4,7 @@ import { usePathname, useSearchParams } from "next/navigation"
 import { Button } from "@/components/stocker/ui/Button"
 import { Card } from "@/components/stocker/ui/Card"
 
-type QuickActionType = "intake" | "move-split" | "treatment" | "invoice"
+type QuickActionType = "intake" | "treatment" | "feed" | "billing"
 
 type QuickActionsBarProps = {
   canManage: boolean
@@ -18,17 +18,17 @@ type QuickAction = {
 }
 
 const QUICK_ACTIONS: QuickAction[] = [
-  { type: "intake", href: "/dashboard/stocker/quick/intake", label: "+ Intake Lot", requiresManage: true },
-  { type: "move-split", href: "/dashboard/stocker/quick/move-split", label: "+ Split / Transfer Lot", requiresManage: true },
-  { type: "treatment", href: "/dashboard/stocker/quick/treatment", label: "+ Log Treatment" },
-  { type: "invoice", href: "/dashboard/stocker/quick/invoice", label: "+ New Invoice", requiresManage: true },
+  { type: "intake", href: "/dashboard/stocker/quick/intake", label: "Receive Cattle", requiresManage: true },
+  { type: "treatment", href: "/dashboard/stocker/quick/treatment", label: "Log Treatment" },
+  { type: "feed", href: "/dashboard/stocker/feed", label: "Enter Feed", requiresManage: true },
+  { type: "billing", href: "/dashboard/stocker/reports", label: "Review Billing", requiresManage: true },
 ]
 
 const SUCCESS_LABELS: Record<QuickActionType, string> = {
   intake: "Lot saved",
-  "move-split": "Lot split saved",
   treatment: "Treatment saved",
-  invoice: "Invoice saved",
+  feed: "Feed saved",
+  billing: "Billing review ready",
 }
 
 function cleanSearchParams(searchParams: URLSearchParams) {
@@ -95,7 +95,7 @@ export function QuickActionsBar({ canManage }: QuickActionsBarProps) {
                 fontWeight: 700,
               }}
             >
-              Quick Actions
+              Start Work
             </strong>
             <span
               style={{
@@ -104,7 +104,7 @@ export function QuickActionsBar({ canManage }: QuickActionsBarProps) {
                 lineHeight: 1.6,
               }}
             >
-              Fast entry for the most common Stocker workflows.
+              Open the most common daily jobs without digging through records.
             </span>
           </div>
         ) : null}

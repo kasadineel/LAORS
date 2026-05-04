@@ -152,52 +152,38 @@ export default async function MedicinePage() {
     <main style={pageStyle}>
       <PageHeader
         title="Medicine Library"
-        subtitle="Manage treatment products, pricing, billing mode, and active status for the yard."
+        subtitle="Review active medicines and billing behavior first. Open setup only when you need to maintain pricing or product details."
         badge="Stocker"
       />
       <StatusRow organizationName={core.organization.name} roleLabel={getRoleDisplayName(core.role)} />
-      <ActionBar primaryAction={{ href: "#new-medicine", label: "+ Add Medicine" }} />
+      <ActionBar
+        primaryAction={{ href: "/dashboard/stocker/treatments", label: "Treat Cattle" }}
+        secondaryActions={[
+          { href: "#medicine-library", label: "Medicine Library" },
+          { href: "#medicine-setup", label: "Medicine Setup" },
+        ]}
+      />
 
-      <CardSection id="new-medicine" title="New Medicine">
-        <form action={createMedicine} style={stackStyle}>
-          <div style={gridStyle}>
-            <Input label="Medicine Name" name="name" placeholder="Draxxin" required style={inputStyle} />
-            <Input label="Unit Label" name="unitLabel" placeholder="cc" defaultValue="cc" style={inputStyle} />
-            <Input
-              label="Cost per Unit"
-              name="costPerUnit"
-              inputMode="decimal"
-              type="number"
-              min="0"
-              step="0.0001"
-              required
-              style={inputStyle}
-            />
-            <Select label="Billing Mode" name="billingMode" defaultValue={MedicineBillingMode.PASS_THROUGH} style={inputStyle}>
-              <option value={MedicineBillingMode.PASS_THROUGH}>Pass through</option>
-              <option value={MedicineBillingMode.PASS_THROUGH_WITH_MARKUP}>Pass through with markup</option>
-              <option value={MedicineBillingMode.FIXED_CHARGE}>Fixed charge</option>
-            </Select>
-            <Input
-              label="Charge per Unit"
-              name="chargePerUnit"
-              inputMode="decimal"
-              type="number"
-              min="0"
-              step="0.0001"
-              style={inputStyle}
-            />
-          </div>
-          <Textarea label="Notes" name="notes" rows={3} placeholder="Notes (optional)" style={inputStyle} />
-          <div>
-            <Button type="submit" variant="primary">
-              Save Medicine
-            </Button>
-          </div>
-        </form>
+      <CardSection title="Medicine Priorities">
+        <div style={{ display: "grid", gap: 16, gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
+          {[
+            { label: "Active Medicines", value: `${medicines.filter((medicine) => medicine.isActive).length}`, note: "Products currently ready for treatment entry." },
+            { label: "Inactive Medicines", value: `${medicines.filter((medicine) => !medicine.isActive).length}`, note: "Older or paused products kept for history." },
+            { label: "Fixed Charges", value: `${medicines.filter((medicine) => medicine.billingMode === MedicineBillingMode.FIXED_CHARGE).length}`, note: "Products billing off a fixed unit charge." },
+          ].map((item) => (
+            <article key={item.label} className="stocker-card" style={{ ...cardStyle, padding: 18 }}>
+              <div style={{ ...metaTextStyle, textTransform: "uppercase", letterSpacing: "0.08em" }}>{item.label}</div>
+              <div style={{ marginTop: 8, fontSize: 24, fontWeight: 700, color: "var(--ink)" }}>{item.value}</div>
+              <p style={{ margin: "8px 0 0", color: "var(--muted)", lineHeight: 1.6 }}>{item.note}</p>
+            </article>
+          ))}
+        </div>
       </CardSection>
 
-      <CardSection title="Medicine Library">
+      <CardSection id="medicine-library" title="Medicine Library">
+        <p style={{ ...metaTextStyle, marginTop: 0, marginBottom: 16, lineHeight: 1.7 }}>
+          This list is the active treatment reference. Use it to confirm what is available and how each product will bill before logging treatment.
+        </p>
         {medicines.length === 0 ? (
           <div className="stocker-empty-state" style={emptyStateStyle}>
             <strong style={{ display: "block", marginBottom: 8 }}>No medicines yet.</strong>
@@ -206,7 +192,10 @@ export default async function MedicinePage() {
         ) : (
           <div style={stackStyle}>
             {medicines.map((medicine) => (
-              <article key={medicine.id} className="stocker-card" style={cardStyle}>
+              <details key={medicine.id} className="stocker-disclosure">
+                <summary>{medicine.name}</summary>
+                <div className="stocker-disclosure__body">
+                <article className="stocker-card" style={cardStyle}>
                 <form action={updateMedicine} style={stackStyle}>
                   <input type="hidden" name="medicineId" value={medicine.id} />
                   <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
@@ -282,9 +271,55 @@ export default async function MedicinePage() {
                   </Button>
                 </form>
               </article>
+              </div>
+              </details>
             ))}
           </div>
         )}
+      </CardSection>
+
+      <CardSection id="medicine-setup" title="Medicine Setup">
+        <details className="stocker-disclosure">
+          <summary>Open medicine creation</summary>
+          <div className="stocker-disclosure__body">
+            <form action={createMedicine} style={stackStyle}>
+              <div style={gridStyle}>
+                <Input label="Medicine Name" name="name" placeholder="Draxxin" required style={inputStyle} />
+                <Input label="Unit Label" name="unitLabel" placeholder="cc" defaultValue="cc" style={inputStyle} />
+                <Input
+                  label="Cost per Unit"
+                  name="costPerUnit"
+                  inputMode="decimal"
+                  type="number"
+                  min="0"
+                  step="0.0001"
+                  required
+                  style={inputStyle}
+                />
+                <Select label="Billing Mode" name="billingMode" defaultValue={MedicineBillingMode.PASS_THROUGH} style={inputStyle}>
+                  <option value={MedicineBillingMode.PASS_THROUGH}>Pass through</option>
+                  <option value={MedicineBillingMode.PASS_THROUGH_WITH_MARKUP}>Pass through with markup</option>
+                  <option value={MedicineBillingMode.FIXED_CHARGE}>Fixed charge</option>
+                </Select>
+                <Input
+                  label="Charge per Unit"
+                  name="chargePerUnit"
+                  inputMode="decimal"
+                  type="number"
+                  min="0"
+                  step="0.0001"
+                  style={inputStyle}
+                />
+              </div>
+              <Textarea label="Notes" name="notes" rows={3} placeholder="Notes (optional)" style={inputStyle} />
+              <div>
+                <Button type="submit" variant="primary">
+                  Save Medicine
+                </Button>
+              </div>
+            </form>
+          </div>
+        </details>
       </CardSection>
     </main>
   )

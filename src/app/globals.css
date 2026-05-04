@@ -188,6 +188,44 @@ body {
   background: rgba(243, 235, 221, 0.72);
 }
 
+.stocker-disclosure {
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.68);
+  overflow: hidden;
+}
+
+.stocker-disclosure > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 16px 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.stocker-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.stocker-disclosure > summary::after {
+  content: "+";
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+}
+
+.stocker-disclosure[open] > summary::after {
+  content: "−";
+}
+
+.stocker-disclosure__body {
+  padding: 0 18px 18px;
+}
+
 .stocker-empty-state {
   color: var(--stocker-muted);
   background: rgba(255, 255, 255, 0.72);

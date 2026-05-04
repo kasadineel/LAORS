@@ -7,19 +7,17 @@ import { Button } from "@/components/stocker/ui/Button"
 import { Input } from "@/components/stocker/ui/Input"
 import { Select } from "@/components/stocker/ui/Select"
 import { Textarea } from "@/components/stocker/ui/Textarea"
-import { LotAdjustmentDirection, LotAdjustmentType, LotLedgerEventType, ModuleKey, StockerActivityType } from "@prisma/client"
+import { LotLedgerEventType, ModuleKey, StockerActivityType } from "@prisma/client"
 import { logStockerActivity } from "@/lib/stocker-activity"
-import { getLotLedgerEventTypeForAdjustment, recordLotLedgerEvent } from "@/lib/stocker-ledger"
+import { recordLotLedgerEvent } from "@/lib/stocker-ledger"
 import {
   formatAverageWeightLbs,
   formatLotLabel,
   formatTotalWeightLbs,
-  getLotAdjustmentTypeLabel,
 } from "@/lib/stocker-labels"
 import { prisma } from "@/lib/prisma"
 import { requireModuleForOrganization } from "@/lib/module-entitlements"
 import { getRoleDisplayName, requireRole, ROLE_MANAGER, ROLE_OWNER } from "@/lib/permissions"
-import { executeLotSplit, SPLIT_TARGET_MODE } from "@/lib/stocker-split"
 import {
   parseDateInput,
   parseNumberInput,
@@ -91,6 +89,10 @@ export default async function LotsPage() {
       },
     }),
   ])
+  const activeLots = lots.filter((lot) => !lot.exitDate)
+  const closedLots = lots.filter((lot) => !!lot.exitDate)
+  const totalOpenHead = activeLots.reduce((sum, lot) => sum + lot.headCount, 0)
+  const lotsNeedingWeightBackfill = activeLots.filter((lot) => lot.inTotalWeight === null).length
 
   async function createLot(formData: FormData) {
     "use server"
@@ -185,317 +187,6 @@ export default async function LotsPage() {
     revalidatePath("/dashboard/stocker")
   }
 
-  async function updateLot(formData: FormData) {
-    "use server"
-
-    await requireModuleForOrganization(orgId, ModuleKey.STOCKER)
-    await requireRole({
-      userId: core.user.id,
-      organizationId: orgId,
-      allowedRoles: [ROLE_OWNER, ROLE_MANAGER],
-    })
-
-    const lotId = formData.get("lotId")?.toString()
-    const ownerId = formData.get("ownerId")?.toString()
-    const penId = formData.get("penId")?.toString()
-    const inTotalWeight = parseNumberInput(formData.get("inTotalWeight"))
-    const outHeadCount = parseNumberInput(formData.get("outHeadCount"))
-    const outTotalWeight = parseNumberInput(formData.get("outTotalWeight"))
-    const arrivalDate = parseDateInput(formData.get("arrivalDate"))
-    const exitDate = parseDateInput(formData.get("exitDate"))
-    const notes = formData.get("notes")?.toString().trim() || null
-
-    if (!lotId || !ownerId || !penId || !arrivalDate) return
-    if (outHeadCount !== null && (!Number.isInteger(outHeadCount) || outHeadCount <= 0)) return
-
-    const [owner, pen, existingLot] = await Promise.all([
-      prisma.owner.findFirst({ where: { id: ownerId, organizationId: orgId }, select: { id: true } }),
-      prisma.pen.findFirst({ where: { id: penId, organizationId: orgId }, select: { id: true } }),
-      prisma.lot.findFirst({
-        where: { id: lotId, organizationId: orgId },
-        select: { id: true, headCount: true, inHeadCount: true, ownerId: true, penId: true },
-      }),
-    ])
-
-    if (!owner || !pen || !existingLot) return
-    if (ownerId !== existingLot.ownerId || penId !== existingLot.penId) return
-    if (outHeadCount !== null && outHeadCount > existingLot.headCount) return
-
-    await prisma.lot.updateMany({
-      where: {
-        id: lotId,
-        organizationId: orgId,
-      },
-      data: {
-        ownerId: existingLot.ownerId,
-        penId: existingLot.penId,
-        inHeadCount: inTotalWeight === null ? null : existingLot.inHeadCount ?? existingLot.headCount,
-        inTotalWeight,
-        outHeadCount,
-        outTotalWeight,
-        arrivalDate,
-        exitDate,
-        notes,
-      },
-    })
-
-    revalidatePath("/dashboard/stocker/lots")
-    revalidatePath("/dashboard/stocker")
-  }
-
-  async function closeLot(formData: FormData) {
-    "use server"
-
-    await requireModuleForOrganization(orgId, ModuleKey.STOCKER)
-    await requireRole({
-      userId: core.user.id,
-      organizationId: orgId,
-      allowedRoles: [ROLE_OWNER, ROLE_MANAGER],
-    })
-
-    const lotId = formData.get("lotId")?.toString()
-    const exitDate = parseDateInput(formData.get("exitDate"), new Date())
-    const outTotalWeight = parseNumberInput(formData.get("outTotalWeight"))
-    const outHeadCountInput = parseNumberInput(formData.get("outHeadCount"))
-    if (!lotId || !exitDate) return
-    if (outHeadCountInput !== null && (!Number.isInteger(outHeadCountInput) || outHeadCountInput <= 0)) return
-
-    const lot = await prisma.lot.findFirst({
-      where: {
-        id: lotId,
-        organizationId: orgId,
-      },
-      select: {
-        id: true,
-        headCount: true,
-        inHeadCount: true,
-        inTotalWeight: true,
-        owner: { select: { name: true } },
-        pen: { select: { name: true } },
-      },
-    })
-
-    if (!lot) return
-    const outHeadCount = outHeadCountInput ?? lot.headCount
-    if (outHeadCount > lot.headCount) return
-
-    await prisma.$transaction(async (tx) => {
-      await tx.lot.updateMany({
-        where: {
-          id: lotId,
-          organizationId: orgId,
-        },
-        data: { exitDate, outHeadCount, outTotalWeight },
-      })
-
-      await recordLotLedgerEvent(
-        {
-          organizationId: orgId,
-          lotId: lot.id,
-          eventType: LotLedgerEventType.CLOSE,
-          eventDate: exitDate,
-          headChange: 0,
-          headAfter: lot.headCount,
-          createdById: core.user.id,
-          metadata: {
-            headCount: lot.headCount,
-            inHeadCount: lot.inHeadCount ?? lot.headCount,
-            inTotalWeight: lot.inTotalWeight,
-            outHeadCount,
-            outTotalWeight,
-            ownerName: lot.owner.name,
-            penName: lot.pen.name,
-            exitDate: exitDate.toISOString(),
-          },
-        },
-        tx,
-      )
-
-      await logStockerActivity(
-        {
-          organizationId: orgId,
-          type: StockerActivityType.CLOSE_LOT,
-          message: `Closed ${formatLotLabel({ ownerName: lot.owner.name, penName: lot.pen.name })}.`,
-          metadata: {
-            lotId: lot.id,
-            headCount: lot.headCount,
-            inHeadCount: lot.inHeadCount ?? lot.headCount,
-            inTotalWeight: lot.inTotalWeight,
-            outHeadCount,
-            outTotalWeight,
-            ownerName: lot.owner.name,
-            penName: lot.pen.name,
-            exitDate: exitDate.toISOString(),
-          },
-          createdByUserId: core.user.id,
-        },
-        tx,
-      )
-    })
-
-    revalidatePath("/dashboard/stocker/lots")
-    revalidatePath("/dashboard/stocker")
-  }
-
-  async function splitLot(formData: FormData) {
-    "use server"
-
-    await requireModuleForOrganization(orgId, ModuleKey.STOCKER)
-    await requireRole({
-      userId: core.user.id,
-      organizationId: orgId,
-      allowedRoles: [ROLE_OWNER, ROLE_MANAGER],
-    })
-
-    const sourceLotId = formData.get("lotId")?.toString()
-    const destinationOwnerId = formData.get("destinationOwnerId")?.toString()
-    const destinationPenId = formData.get("destinationPenId")?.toString()
-    const destinationLotId = formData.get("destinationLotId")?.toString() || null
-    const splitQuantity = parseNumberInput(formData.get("splitQuantity"))
-    const splitDate = parseDateInput(formData.get("splitDate"), new Date())
-    const notes = formData.get("notes")?.toString().trim() || null
-    const targetMode = formData.get("splitTargetMode")?.toString()
-
-    if (!sourceLotId || !destinationOwnerId || !destinationPenId || !splitDate || !splitQuantity) return
-    if (!Number.isInteger(splitQuantity) || splitQuantity <= 0) return
-    if (targetMode !== SPLIT_TARGET_MODE.NEW && targetMode !== SPLIT_TARGET_MODE.EXISTING) return
-
-    const result = await executeLotSplit({
-      organizationId: orgId,
-      createdByUserId: core.user.id,
-      sourceLotId,
-      splitQuantity,
-      destinationOwnerId,
-      destinationPenId,
-      splitDate,
-      notes,
-      targetMode,
-      destinationLotId,
-    })
-
-    if (!result) return
-
-    revalidatePath("/dashboard/stocker/lots")
-    revalidatePath("/dashboard/stocker")
-    revalidatePath(`/dashboard/stocker/lots/${sourceLotId}`)
-    revalidatePath(`/dashboard/stocker/lots/${result.destinationLotId}`)
-  }
-
-  async function adjustLotHeadCount(formData: FormData) {
-    "use server"
-
-    await requireModuleForOrganization(orgId, ModuleKey.STOCKER)
-    await requireRole({
-      userId: core.user.id,
-      organizationId: orgId,
-      allowedRoles: [ROLE_OWNER, ROLE_MANAGER],
-    })
-
-    const lotId = formData.get("lotId")?.toString()
-    const adjustmentType = formData.get("adjustmentType")?.toString() as LotAdjustmentType | undefined
-    const quantity = parseNumberInput(formData.get("quantity"))
-    const adjustmentDate = parseDateInput(formData.get("adjustmentDate"), new Date())
-    const notes = formData.get("notes")?.toString().trim() || null
-    const requestedDirection = formData.get("direction")?.toString() as LotAdjustmentDirection | undefined
-
-    if (!lotId || !adjustmentType || !adjustmentDate || quantity === null) return
-    if (!Number.isInteger(quantity) || quantity <= 0) return
-
-    const direction = resolveAdjustmentDirection(adjustmentType, requestedDirection)
-    if (!direction) return
-
-    const lot = await prisma.lot.findFirst({
-      where: {
-        id: lotId,
-        organizationId: orgId,
-      },
-      select: {
-        id: true,
-        headCount: true,
-        exitDate: true,
-        owner: { select: { name: true } },
-        pen: { select: { name: true } },
-      },
-    })
-
-    if (!lot || lot.exitDate) return
-
-    const nextHeadCount =
-      direction === LotAdjustmentDirection.IN ? lot.headCount + quantity : lot.headCount - quantity
-
-    if (nextHeadCount < 0 || (direction === LotAdjustmentDirection.OUT && quantity > lot.headCount)) return
-
-    await prisma.$transaction(async (tx) => {
-      await tx.lotAdjustment.create({
-        data: {
-          organizationId: orgId,
-          lotId: lot.id,
-          type: adjustmentType,
-          direction,
-          quantity,
-          adjustmentDate,
-          notes,
-          createdById: core.user.id,
-        },
-      })
-
-      await tx.lot.update({
-        where: { id: lot.id },
-        data: { headCount: nextHeadCount },
-      })
-
-      await recordLotLedgerEvent(
-        {
-          organizationId: orgId,
-          lotId: lot.id,
-          eventType: getLotLedgerEventTypeForAdjustment(adjustmentType),
-          eventDate: adjustmentDate,
-          headChange: direction === LotAdjustmentDirection.IN ? quantity : -quantity,
-          headAfter: nextHeadCount,
-          notes,
-          createdById: core.user.id,
-          metadata: {
-            ownerName: lot.owner.name,
-            penName: lot.pen.name,
-            type: adjustmentType,
-            direction,
-            quantity,
-            previousHeadCount: lot.headCount,
-            currentHeadCount: nextHeadCount,
-            adjustmentDate: adjustmentDate.toISOString(),
-            notes,
-          },
-        },
-        tx,
-      )
-
-      await logStockerActivity(
-        {
-          organizationId: orgId,
-          type: StockerActivityType.LOT_ADJUSTMENT,
-          message: `Adjusted ${formatLotLabel({ ownerName: lot.owner.name, penName: lot.pen.name })}: ${direction === LotAdjustmentDirection.IN ? "+" : "-"}${quantity} head for ${getLotAdjustmentTypeLabel(adjustmentType).toLowerCase()}.`,
-          metadata: {
-            lotId: lot.id,
-            ownerName: lot.owner.name,
-            penName: lot.pen.name,
-            type: adjustmentType,
-            direction,
-            quantity,
-            previousHeadCount: lot.headCount,
-            currentHeadCount: nextHeadCount,
-            adjustmentDate: adjustmentDate.toISOString(),
-            notes,
-          },
-          createdByUserId: core.user.id,
-        },
-        tx,
-      )
-    })
-
-    revalidatePath("/dashboard/stocker/lots")
-    revalidatePath("/dashboard/stocker")
-  }
-
   async function deleteLot(formData: FormData) {
     "use server"
 
@@ -523,8 +214,8 @@ export default async function LotsPage() {
   return (
     <main style={pageStyle}>
       <PageHeader
-        title="Lots"
-        subtitle="Manage arrivals, exits, moves, and split lots across pens."
+        title="Work Lots"
+        subtitle="Run the main yard workflow here: receive cattle, work open lots, transfer cattle, and close lots cleanly."
         badge="Stocker"
       />
       <StatusRow
@@ -532,69 +223,130 @@ export default async function LotsPage() {
         roleLabel={getRoleDisplayName(core.role)}
       />
       <ActionBar
-        primaryAction={{ href: "#intake-lot", label: "+ Intake Lot" }}
-        secondaryActions={[{ href: "/dashboard/stocker/quick/move-split", label: "Quick Split / Transfer" }]}
+        primaryAction={{ href: "/dashboard/stocker/quick/intake?returnTo=%2Fdashboard%2Fstocker%2Flots", label: "Receive Cattle" }}
+        secondaryActions={[
+          { href: "#active-lots", label: "Work Open Lots" },
+          { href: "/dashboard/stocker/quick/adjust?returnTo=%2Fdashboard%2Fstocker%2Flots", label: "Adjust Head Count" },
+          { href: "/dashboard/stocker/quick/move-split", label: "Split / Transfer" },
+        ]}
       />
 
-      <CardSection id="intake-lot" title="Intake Lot">
+      <CardSection title="Lot Workflow">
+        <div style={{ display: "grid", gap: 16, gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", marginBottom: 16 }}>
+          {[
+            { label: "1. Receive Cattle", note: "Start a new lot with owner, pen, head count, and total in weight." },
+            { label: "2. Work Open Lots", note: "Keep counts right, capture changes, and route cattle where they belong." },
+            { label: "3. Close Out", note: "Finish the lot with out head count, out weight, and billing handoff." },
+          ].map((item) => (
+            <article key={item.label} className="stocker-card" style={{ ...cardStyle, padding: 18 }}>
+              <div style={{ fontWeight: 700, color: "var(--ink)" }}>{item.label}</div>
+              <p style={{ margin: "10px 0 0", color: "var(--muted)", lineHeight: 1.6 }}>{item.note}</p>
+            </article>
+          ))}
+        </div>
+        <div style={{ display: "grid", gap: 16, gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
+          {[
+            { label: "Active Lots", value: `${activeLots.length}`, note: "Lots currently driving daily work." },
+            { label: "Open Head", value: `${totalOpenHead}`, note: "Head currently represented in open lots." },
+            { label: "Closed Lots", value: `${closedLots.length}`, note: "Historical lots moved out of the main workflow." },
+            {
+              label: "Weight Follow-Up",
+              value: `${lotsNeedingWeightBackfill}`,
+              note: lotsNeedingWeightBackfill > 0 ? "Open lots still missing total in weight." : "All open lots have intake weight on file.",
+            },
+          ].map((item) => (
+            <article key={item.label} className="stocker-card" style={{ ...cardStyle, padding: 18 }}>
+              <div style={{ ...metaTextStyle, textTransform: "uppercase", letterSpacing: "0.08em" }}>{item.label}</div>
+              <div style={{ marginTop: 8, fontSize: 24, fontWeight: 700, color: "var(--ink)" }}>{item.value}</div>
+              <p style={{ margin: "8px 0 0", color: "var(--muted)", lineHeight: 1.6 }}>{item.note}</p>
+            </article>
+          ))}
+        </div>
+      </CardSection>
+
+      <CardSection id="intake-lot" title="Receive Cattle">
+        <div style={{ display: "grid", gap: 16 }}>
+          <div style={{ display: "grid", gap: 16, gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))" }}>
+            <article className="stocker-card" style={{ ...cardStyle, padding: 18 }}>
+              <div style={{ fontWeight: 700, color: "var(--ink)" }}>Quick Intake</div>
+              <p style={{ margin: "10px 0 14px", color: "var(--muted)", lineHeight: 1.6 }}>
+                Use the fast receiving form when you just need owner, pen, head count, arrival date, and total in weight.
+              </p>
+              <Button href="/dashboard/stocker/quick/intake?returnTo=%2Fdashboard%2Fstocker%2Flots" variant="secondary" size="sm">
+                Open Quick Intake
+              </Button>
+            </article>
+            <article className="stocker-card" style={{ ...cardStyle, padding: 18 }}>
+              <div style={{ fontWeight: 700, color: "var(--ink)" }}>Full Intake Fallback</div>
+              <p style={{ margin: "10px 0 0", color: "var(--muted)", lineHeight: 1.6 }}>
+                Keep the full intake form below for slower office entry or backfill work. Daily receiving should usually start in Quick Intake.
+              </p>
+            </article>
+          </div>
         {owners.length === 0 || pens.length === 0 ? (
           <div className="stocker-empty-state" style={emptyStateStyle}>
             Create at least one owner and one pen before adding lots.
           </div>
         ) : (
-          <form action={createLot} style={stackStyle}>
-            <div style={gridStyle}>
-              <Select label="Owner" name="ownerId" defaultValue="" style={inputStyle}>
-                <option value="" disabled>
-                  Select owner
-                </option>
-                {owners.map((owner) => (
-                  <option key={owner.id} value={owner.id}>
-                    {owner.name}
-                  </option>
-                ))}
-              </Select>
-              <Select label="Pen" name="penId" defaultValue="" style={inputStyle}>
-                <option value="" disabled>
-                  Select pen
-                </option>
-                {pens.map((pen) => (
-                  <option key={pen.id} value={pen.id}>
-                    {pen.name}
-                  </option>
-                ))}
-              </Select>
-              <Input label="Head count" name="headCount" inputMode="numeric" style={inputStyle} />
-              <Input
-                label="Total In Weight (lbs)"
-                name="inTotalWeight"
-                type="number"
-                min="0"
-                step="0.1"
-                inputMode="decimal"
-                style={inputStyle}
-              />
-              <Input label="Arrival date" name="arrivalDate" type="date" defaultValue={toDateInputValue(new Date())} style={inputStyle} />
+          <details className="stocker-disclosure">
+            <summary>Open full intake form</summary>
+            <div className="stocker-disclosure__body">
+              <form action={createLot} style={stackStyle}>
+                <div style={gridStyle}>
+                  <Select label="Owner" name="ownerId" defaultValue="" style={inputStyle}>
+                    <option value="" disabled>
+                      Select owner
+                    </option>
+                    {owners.map((owner) => (
+                      <option key={owner.id} value={owner.id}>
+                        {owner.name}
+                      </option>
+                    ))}
+                  </Select>
+                  <Select label="Pen" name="penId" defaultValue="" style={inputStyle}>
+                    <option value="" disabled>
+                      Select pen
+                    </option>
+                    {pens.map((pen) => (
+                      <option key={pen.id} value={pen.id}>
+                        {pen.name}
+                      </option>
+                    ))}
+                  </Select>
+                  <Input label="Head count" name="headCount" inputMode="numeric" style={inputStyle} />
+                  <Input
+                    label="Total In Weight (lbs)"
+                    name="inTotalWeight"
+                    type="number"
+                    min="0"
+                    step="0.1"
+                    inputMode="decimal"
+                    style={inputStyle}
+                  />
+                  <Input label="Arrival date" name="arrivalDate" type="date" defaultValue={toDateInputValue(new Date())} style={inputStyle} />
+                </div>
+                <Textarea label="Notes" name="notes" placeholder="Notes" rows={3} style={inputStyle} />
+                <div>
+                  <Button type="submit" variant="primary">
+                    Save Lot
+                  </Button>
+                </div>
+              </form>
             </div>
-            <Textarea label="Notes" name="notes" placeholder="Notes" rows={3} style={inputStyle} />
-            <div>
-              <Button type="submit" variant="primary">
-                Save Lot
-              </Button>
-            </div>
-          </form>
+          </details>
         )}
+        </div>
       </CardSection>
 
-      <CardSection title="Lot Registry">
-        {lots.length === 0 ? (
+      <CardSection id="active-lots" title="Work Open Lots">
+        {activeLots.length === 0 ? (
           <div className="stocker-empty-state" style={emptyStateStyle}>
-            <strong style={{ display: "block", marginBottom: 8 }}>No lots currently active.</strong>
+            <strong style={{ display: "block", marginBottom: 8 }}>No open lots right now.</strong>
             Intake your first lot to begin tracking cattle.
           </div>
         ) : (
           <div style={stackStyle}>
-            {lots.map((lot) => {
+            {activeLots.map((lot) => {
               const effectiveOutHeadCount = getEffectiveOutHeadCount(lot.outHeadCount, lot.headCount)
 
               return (
@@ -611,10 +363,14 @@ export default async function LotsPage() {
                       <Button href={`/dashboard/stocker/lots/${lot.id}`} variant="secondary" size="sm">
                         View Lot Detail
                       </Button>
+                      {!lot.exitDate ? (
+                        <Button href={`/dashboard/stocker/lots/${lot.id}/closeout`} variant="secondary" size="sm">
+                          Closeout Review
+                        </Button>
+                      ) : null}
                     </div>
                     <div style={metaTextStyle}>
-                      Current head count: {lot.headCount} | Status: {lot.exitDate ? "Closed" : "Open"} | Arrival: {lot.arrivalDate.toLocaleDateString()} | Exit:{" "}
-                      {lot.exitDate ? lot.exitDate.toLocaleDateString() : "Open"}
+                      Current head count: {lot.headCount} | Status: Open | Arrival: {lot.arrivalDate.toLocaleDateString()}
                     </div>
                     <div style={metaTextStyle}>
                       In total: {formatTotalWeightLbs(lot.inTotalWeight)} | Avg in:{" "}
@@ -632,283 +388,110 @@ export default async function LotsPage() {
                     </div>
                   </div>
 
-                  <form action={updateLot} style={stackStyle}>
-                    <input type="hidden" name="lotId" value={lot.id} />
-                    <input type="hidden" name="ownerId" value={lot.ownerId} />
-                    <input type="hidden" name="penId" value={lot.penId} />
-                    <div style={gridStyle}>
-                      <Input label="Owner" value={lot.owner.name} disabled style={inputStyle} />
-                      <Input label="Pen" value={lot.pen.name} disabled style={inputStyle} />
-                      <Input
-                        label="Arrival date"
-                        name="arrivalDate"
-                        type="date"
-                        defaultValue={toDateInputValue(lot.arrivalDate)}
-                        style={inputStyle}
-                      />
-                      <Input
-                        label="Total In Weight (lbs)"
-                        name="inTotalWeight"
-                        type="number"
-                        min="0"
-                        step="0.1"
-                        inputMode="decimal"
-                        defaultValue={lot.inTotalWeight ?? ""}
-                        style={inputStyle}
-                      />
-                      <Input
-                        label="Exit date"
-                        name="exitDate"
-                        type="date"
-                        defaultValue={toDateInputValue(lot.exitDate)}
-                        style={inputStyle}
-                      />
-                      <Input
-                        label="Out Head Count"
-                        name="outHeadCount"
-                        type="number"
-                        min="1"
-                        step="1"
-                        inputMode="numeric"
-                        defaultValue={lot.outHeadCount ?? ""}
-                        style={inputStyle}
-                      />
-                      <Input
-                        label="Total Out Weight (lbs)"
-                        name="outTotalWeight"
-                        type="number"
-                        min="0"
-                        step="0.1"
-                        inputMode="decimal"
-                        defaultValue={lot.outTotalWeight ?? ""}
-                        style={inputStyle}
-                      />
-                    </div>
-                    <div style={metaTextStyle}>Use Split / Transfer to change owner or pen so inventory history stays traceable.</div>
-                    <Textarea label="Notes" name="notes" rows={3} defaultValue={lot.notes ?? ""} style={inputStyle} />
-                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                      <Button type="submit" variant="primary">
-                        Update Lot Details
-                      </Button>
-                    </div>
-                  </form>
+                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
+                    <Button href={`/dashboard/stocker/lots/${lot.id}`} variant="secondary" size="sm">
+                      View Lot Detail
+                    </Button>
+                    <Button href={`/dashboard/stocker/quick/adjust?returnTo=${encodeURIComponent("/dashboard/stocker/lots")}`} variant="secondary" size="sm">
+                      Adjust Head Count
+                    </Button>
+                    <Button href={`/dashboard/stocker/lots/${lot.id}/closeout`} variant="secondary" size="sm">
+                      Closeout Review
+                    </Button>
+                    <Button href={`/dashboard/stocker/quick/move-split?returnTo=${encodeURIComponent("/dashboard/stocker/lots")}`} variant="secondary" size="sm">
+                      Split / Transfer
+                    </Button>
+                  </div>
 
-                  {!lot.exitDate ? (
-                    <div style={{ marginTop: 16, ...stackStyle }}>
-                      <form action={adjustLotHeadCount} style={stackStyle}>
-                        <input type="hidden" name="lotId" value={lot.id} />
-                        <div style={gridStyle}>
-                          <Select label="Adjustment type" name="adjustmentType" defaultValue="" style={inputStyle}>
-                            <option value="" disabled>
-                              Adjustment type
-                            </option>
-                            {LOT_ADJUSTMENT_TYPE_OPTIONS.map((option) => (
-                              <option key={option.value} value={option.value}>
-                                {option.label}
-                              </option>
+                  <details className="stocker-disclosure">
+                    <summary>Recent count changes and archive actions</summary>
+                    <div className="stocker-disclosure__body" style={stackStyle}>
+                      <div>
+                        <div style={{ ...metaTextStyle, marginBottom: 8 }}>Recent adjustments</div>
+                        {lot.adjustments.length === 0 ? (
+                          <div style={metaTextStyle}>No head count adjustments recorded yet.</div>
+                        ) : (
+                          <div style={{ display: "grid", gap: 8 }}>
+                            {lot.adjustments.map((adjustment) => (
+                              <div key={adjustment.id} style={{ borderTop: "1px solid rgba(11, 45, 69, 0.08)", paddingTop: 8 }}>
+                                <div style={{ fontWeight: 700, color: "var(--stocker-navy)" }}>
+                                  {adjustment.direction === "IN" ? "+" : "-"}
+                                  {adjustment.quantity} head
+                                </div>
+                                <div style={metaTextStyle}>
+                                  {adjustment.adjustmentDate.toLocaleDateString()}
+                                  {adjustment.notes ? ` | ${adjustment.notes}` : ""}
+                                </div>
+                              </div>
                             ))}
-                          </Select>
-                          <Select label="Direction" name="direction" defaultValue="" style={inputStyle}>
-                            <option value="" disabled>
-                              Direction
-                            </option>
-                            <option value={LotAdjustmentDirection.OUT}>Reduce head</option>
-                            <option value={LotAdjustmentDirection.IN}>Add head</option>
-                          </Select>
-                          <Input
-                            label="Quantity"
-                            name="quantity"
-                            inputMode="numeric"
-                            style={inputStyle}
-                          />
-                          <Input
-                            label="Adjustment date"
-                            name="adjustmentDate"
-                            type="date"
-                            defaultValue={toDateInputValue(new Date())}
-                            style={inputStyle}
-                          />
-                        </div>
-                        <Textarea
-                          label="Adjustment notes"
-                          name="notes"
-                          rows={2}
-                          placeholder="Notes (death loss, owner pickup, correction reason)"
-                          style={inputStyle}
-                        />
-                        <div>
-                          <Button type="submit" variant="secondary">
-                            Adjust Head Count
-                          </Button>
-                        </div>
-                      </form>
+                          </div>
+                        )}
+                      </div>
 
-                      <form action={splitLot} style={stackStyle}>
-                        <input type="hidden" name="lotId" value={lot.id} />
-                        <div style={gridStyle}>
-                          <Select label="Quantity to Split" name="splitQuantity" defaultValue="" style={inputStyle}>
-                            <option value="" disabled>
-                              Select quantity
-                            </option>
-                            {Array.from({ length: lot.headCount }, (_, index) => index + 1).map((count) => (
-                              <option key={count} value={count}>
-                                {count} head
-                              </option>
-                            ))}
-                          </Select>
-                          <Select label="Destination Owner" name="destinationOwnerId" defaultValue={lot.ownerId} style={inputStyle}>
-                            {owners.map((owner) => (
-                              <option key={owner.id} value={owner.id}>
-                                {owner.name}
-                              </option>
-                            ))}
-                          </Select>
-                          <Select label="Destination Pen" name="destinationPenId" defaultValue={lot.penId} style={inputStyle}>
-                            {pens.map((pen) => (
-                              <option key={pen.id} value={pen.id}>
-                                {pen.name}
-                              </option>
-                            ))}
-                          </Select>
-                          <Select label="Split Into" name="splitTargetMode" defaultValue={SPLIT_TARGET_MODE.NEW} style={inputStyle}>
-                            <option value={SPLIT_TARGET_MODE.NEW}>Create New Lot</option>
-                            <option value={SPLIT_TARGET_MODE.EXISTING}>Add to Existing Lot</option>
-                          </Select>
-                          <Select label="Existing Destination Lot" name="destinationLotId" defaultValue="" style={inputStyle}>
-                            <option value="">Create new lot</option>
-                            {lots
-                              .filter((candidateLot) => candidateLot.id !== lot.id && !candidateLot.exitDate)
-                              .map((candidateLot) => (
-                                <option key={candidateLot.id} value={candidateLot.id}>
-                                  {formatLotLabel({
-                                    ownerName: candidateLot.owner.name,
-                                    penName: candidateLot.pen.name,
-                                    arrivalDate: candidateLot.arrivalDate,
-                                  })}{" "}
-                                  · {candidateLot.headCount} head
-                                </option>
-                              ))}
-                          </Select>
-                          <Input
-                            label="Split Date"
-                            name="splitDate"
-                            type="date"
-                            defaultValue={toDateInputValue(new Date())}
-                            style={inputStyle}
-                          />
-                        </div>
-                        <Textarea
-                          label="Split Notes"
-                          name="notes"
-                          rows={2}
-                          placeholder="Reason for owner transfer or split"
-                          style={inputStyle}
-                        />
-                        <div>
-                          <Button type="submit" variant="secondary">
-                            Split / Transfer Lot
-                          </Button>
-                        </div>
-                      </form>
+                      <div style={metaTextStyle}>
+                        Edit arrival date, weights, exit details, and notes from the lot detail page.
+                      </div>
 
-                      <form action={closeLot} style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      <form action={deleteLot}>
                         <input type="hidden" name="lotId" value={lot.id} />
-                        <Input
-                          label="Exit date"
-                          name="exitDate"
-                          type="date"
-                          defaultValue={toDateInputValue(new Date())}
-                          style={inputStyle}
-                        />
-                        <Input
-                          label="Out Head Count"
-                          name="outHeadCount"
-                          type="number"
-                          min="1"
-                          step="1"
-                          inputMode="numeric"
-                          defaultValue={effectiveOutHeadCount ?? lot.headCount}
-                          style={inputStyle}
-                        />
-                        <Input
-                          label="Total Out Weight (lbs)"
-                          name="outTotalWeight"
-                          type="number"
-                          min="0"
-                          step="0.1"
-                          inputMode="decimal"
-                          defaultValue={lot.outTotalWeight ?? ""}
-                          style={inputStyle}
-                        />
                         <Button type="submit" variant="secondary">
-                          Close Lot
+                          Delete Lot
                         </Button>
                       </form>
                     </div>
-                  ) : null}
-
-                  <div style={{ marginTop: 16 }}>
-                    <div style={{ ...metaTextStyle, marginBottom: 8 }}>Recent adjustments</div>
-                    {lot.adjustments.length === 0 ? (
-                      <div style={metaTextStyle}>No head count adjustments recorded yet.</div>
-                    ) : (
-                      <div style={{ display: "grid", gap: 8 }}>
-                        {lot.adjustments.map((adjustment) => (
-                          <div key={adjustment.id} style={{ borderTop: "1px solid rgba(11, 45, 69, 0.08)", paddingTop: 8 }}>
-                            <div style={{ fontWeight: 700, color: "var(--stocker-navy)" }}>
-                              {adjustment.direction === LotAdjustmentDirection.IN ? "+" : "-"}
-                              {adjustment.quantity} head · {getLotAdjustmentTypeLabel(adjustment.type)}
-                            </div>
-                            <div style={metaTextStyle}>
-                              {adjustment.adjustmentDate.toLocaleDateString()}
-                              {adjustment.notes ? ` | ${adjustment.notes}` : ""}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-
-                  <form action={deleteLot} style={{ marginTop: 12 }}>
-                    <input type="hidden" name="lotId" value={lot.id} />
-                    <Button type="submit" variant="secondary">
-                      Delete Lot
-                    </Button>
-                  </form>
+                  </details>
                 </article>
               )
             })}
           </div>
         )}
       </CardSection>
+
+      <CardSection title="Closed Lot Archive">
+        {closedLots.length === 0 ? (
+          <div className="stocker-empty-state" style={emptyStateStyle}>
+            No closed lots are archived yet.
+          </div>
+        ) : (
+          <details
+            style={{
+              border: "1px solid rgba(16, 42, 67, 0.08)",
+              borderRadius: 16,
+              padding: 14,
+              background: "rgba(255, 255, 255, 0.7)",
+            }}
+          >
+            <summary style={{ cursor: "pointer", fontWeight: 700, color: "var(--ink)" }}>
+              View {closedLots.length} closed lot{closedLots.length === 1 ? "" : "s"}
+            </summary>
+            <div style={{ display: "grid", gap: 14, marginTop: 14 }}>
+              {closedLots.map((lot) => {
+                const effectiveOutHeadCount = getEffectiveOutHeadCount(lot.outHeadCount, lot.headCount)
+
+                return (
+                  <article key={lot.id} className="stocker-card" style={{ ...cardStyle, padding: 16 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
+                      <strong style={{ color: "var(--stocker-navy)" }}>
+                        {formatLotLabel({
+                          ownerName: lot.owner.name,
+                          penName: lot.pen.name,
+                          arrivalDate: lot.arrivalDate,
+                        })}
+                      </strong>
+                      <Button href={`/dashboard/stocker/lots/${lot.id}`} variant="secondary" size="sm">
+                        View Lot Detail
+                      </Button>
+                    </div>
+                    <div style={{ ...metaTextStyle, marginTop: 8 }}>
+                      Closed {lot.exitDate?.toLocaleDateString()} · Out head count: {effectiveOutHeadCount ?? "Not recorded"} · Out total: {formatTotalWeightLbs(lot.outTotalWeight)}
+                    </div>
+                  </article>
+                )
+              })}
+            </div>
+          </details>
+        )}
+      </CardSection>
     </main>
   )
-}
-
-const LOT_ADJUSTMENT_TYPE_OPTIONS = [
-  { value: LotAdjustmentType.DEATH_LOSS, label: "Death loss" },
-  { value: LotAdjustmentType.OWNER_PICKUP, label: "Owner pickup" },
-  { value: LotAdjustmentType.SHIPMENT_OUT, label: "Shipment out" },
-  { value: LotAdjustmentType.ADDITION, label: "Addition received" },
-  { value: LotAdjustmentType.COUNT_CORRECTION, label: "Count correction" },
-  { value: LotAdjustmentType.OTHER, label: "Other" },
-] as const
-
-function resolveAdjustmentDirection(
-  type: LotAdjustmentType,
-  requestedDirection?: LotAdjustmentDirection,
-) {
-  if (type === LotAdjustmentType.DEATH_LOSS || type === LotAdjustmentType.OWNER_PICKUP || type === LotAdjustmentType.SHIPMENT_OUT) {
-    return LotAdjustmentDirection.OUT
-  }
-
-  if (type === LotAdjustmentType.ADDITION) {
-    return LotAdjustmentDirection.IN
-  }
-
-  if (type === LotAdjustmentType.COUNT_CORRECTION || type === LotAdjustmentType.OTHER) {
-    return requestedDirection ?? null
-  }
-
-  return null
 }

@@ -7,7 +7,7 @@ import { Button } from "@/components/stocker/ui/Button"
 import { Input } from "@/components/stocker/ui/Input"
 import { Select } from "@/components/stocker/ui/Select"
 import { logStockerActivity } from "@/lib/stocker-activity"
-import { getInvoiceBillingMonth } from "@/lib/stocker-billing"
+import { findExistingNonVoidInvoiceForMonth, getInvoiceBillingMonth, roundMoney } from "@/lib/stocker-billing"
 import { prisma } from "@/lib/prisma"
 import { requireModuleForOrganization } from "@/lib/module-entitlements"
 import { requireRole, ROLE_MANAGER, ROLE_OWNER } from "@/lib/permissions"
@@ -78,45 +78,74 @@ export default async function QuickInvoicePage({ searchParams }: QuickInvoicePag
 
     if (!owner) return
 
-    const amount = quantity * price
+    const amount = roundMoney(quantity * price)
+    const monthValue = getInvoiceBillingMonth(date)
+    const monthStart = new Date(`${monthValue}-01T00:00:00.000Z`)
+    const monthEnd = new Date(monthStart.getUTCFullYear(), monthStart.getUTCMonth() + 1, 1)
 
-    await prisma.invoice.create({
-      data: {
-        ownerId,
-        organizationId: orgId,
-        date,
-        billingMonth: getInvoiceBillingMonth(date),
-        status: InvoiceStatus.DRAFT,
-        total: amount,
-        lines: {
-          create: {
-            source: InvoiceLineSource.MANUAL,
-            generated: false,
-            quantity,
-            description,
-            price,
-            amount,
+    const invoiceResult = await prisma.$transaction(async (tx) => {
+      const existingInvoice = await findExistingNonVoidInvoiceForMonth(
+        {
+          organizationId: orgId,
+          ownerId,
+          monthStart,
+          monthEnd,
+          monthValue,
+        },
+        tx,
+      )
+
+      if (existingInvoice) {
+        return { id: existingInvoice.id, reused: true as const }
+      }
+
+      const createdInvoice = await tx.invoice.create({
+        data: {
+          ownerId,
+          organizationId: orgId,
+          date,
+          billingMonth: monthValue,
+          status: InvoiceStatus.DRAFT,
+          total: amount,
+          lines: {
+            create: {
+              source: InvoiceLineSource.MANUAL,
+              generated: false,
+              quantity,
+              description,
+              price,
+              amount,
+            },
           },
         },
-      },
+        select: { id: true },
+      })
+
+      return { id: createdInvoice.id, reused: false as const }
     })
 
-    await logStockerActivity({
-      organizationId: orgId,
-      type: StockerActivityType.INVOICE_CREATED,
-      message: `Created invoice for ${owner.name} totaling $${amount.toFixed(2)}.`,
-      metadata: {
-        ownerId,
-        ownerName: owner.name,
-        date: date.toISOString(),
-        total: amount,
-        lineCount: 1,
-      },
-      createdByUserId: core.user.id,
-    })
+    if (!invoiceResult.reused) {
+      await logStockerActivity({
+        organizationId: orgId,
+        type: StockerActivityType.INVOICE_CREATED,
+        message: `Created invoice for ${owner.name} totaling $${amount.toFixed(2)}.`,
+        metadata: {
+          ownerId,
+          ownerName: owner.name,
+          date: date.toISOString(),
+          total: amount,
+          lineCount: 1,
+        },
+        createdByUserId: core.user.id,
+      })
+    }
 
     revalidatePath("/dashboard/stocker")
     revalidatePath("/dashboard/stocker/invoices")
+
+    if (invoiceResult.reused) {
+      redirect(`/dashboard/stocker/invoices?invoiceId=${encodeURIComponent(invoiceResult.id)}`)
+    }
 
     if (intent === "add-another") {
       redirect(`/dashboard/stocker/quick/invoice?returnTo=${encodeURIComponent(targetReturnTo)}`)

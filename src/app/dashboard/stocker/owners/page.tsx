@@ -65,6 +65,9 @@ export default async function OwnersPage() {
   for (const lot of openLots) {
     inventoryByOwner.set(lot.ownerId, (inventoryByOwner.get(lot.ownerId) ?? 0) + lot.headCount)
   }
+  const totalInventory = owners.reduce((sum, owner) => sum + (inventoryByOwner.get(owner.id) ?? 0), 0)
+  const ownersMissingRates = owners.filter((owner) => owner.yardageRatePerHeadDay === null).length
+  const ownersMissingAddress = owners.filter((owner) => !owner.billingAddress?.trim()).length
 
   async function createOwner(formData: FormData) {
     "use server"
@@ -161,62 +164,42 @@ export default async function OwnersPage() {
     <main style={pageStyle}>
       <PageHeader
         title="Owners"
-        subtitle="Manage cattle ownership groups across the yard."
+        subtitle="Review owner accounts first. Open setup only when you need to maintain billing settings or contact details."
         badge="Stocker"
       />
       <StatusRow
         organizationName={core.organization.name}
         roleLabel={getRoleDisplayName(core.role)}
       />
-      <ActionBar primaryAction={{ href: "#new-owner", label: "+ New Owner" }} />
+      <ActionBar
+        primaryAction={{ href: "/dashboard/stocker/reports", label: "Review Billing" }}
+        secondaryActions={[
+          { href: "#owner-directory", label: "Owner Directory" },
+          { href: "#owner-setup", label: "Owner Setup" },
+        ]}
+      />
 
-      <CardSection id="new-owner" title="New Owner">
-        <form action={createOwner} style={{ ...stackStyle, maxWidth: 680 }}>
-          <Input label="Owner Name" name="name" placeholder="Walton Marshall" required style={inputStyle} />
-          <Input
-            label="Yardage Rate ($ per head/day)"
-            name="yardageRatePerHeadDay"
-            placeholder="3.00"
-            inputMode="decimal"
-            type="number"
-            min="0"
-            step="0.01"
-            style={inputStyle}
-          />
-          <Input
-            label="Medicine Markup %"
-            name="medicineMarkupPercent"
-            placeholder="0"
-            defaultValue="0"
-            inputMode="decimal"
-            type="number"
-            min="0"
-            step="0.01"
-            style={inputStyle}
-          />
-          <Textarea
-            label="Billing Notes"
-            name="billingNotes"
-            placeholder="Internal billing notes for invoices and owner review."
-            rows={4}
-            style={{ ...inputStyle, resize: "vertical" }}
-          />
-          <Textarea
-            label="Billing Address"
-            name="billingAddress"
-            placeholder={"Walton Marshall\n123 Ranch Road\nAustin, TX 78701"}
-            rows={4}
-            style={{ ...inputStyle, resize: "vertical" }}
-          />
-          <div>
-            <Button type="submit" variant="primary">
-              Save Owner
-            </Button>
-          </div>
-        </form>
+      <CardSection title="Owner Priorities">
+        <div style={{ display: "grid", gap: 16, gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
+          {[
+            { label: "Owners", value: `${owners.length}`, note: "Owner accounts currently on file." },
+            { label: "Open Inventory", value: `${totalInventory}`, note: "Head currently tied to owner accounts." },
+            { label: "Missing Yardage Rates", value: `${ownersMissingRates}`, note: ownersMissingRates > 0 ? "Billing setup still incomplete for some owners." : "All owners have yardage rates on file." },
+            { label: "Missing Billing Addresses", value: `${ownersMissingAddress}`, note: ownersMissingAddress > 0 ? "Invoice delivery info still needs cleanup." : "Billing addresses are on file for all owners." },
+          ].map((item) => (
+            <article key={item.label} className="stocker-card" style={{ ...cardStyle, padding: 18 }}>
+              <div style={{ ...metaTextStyle, textTransform: "uppercase", letterSpacing: "0.08em" }}>{item.label}</div>
+              <div style={{ marginTop: 8, fontSize: 24, fontWeight: 700, color: "var(--ink)" }}>{item.value}</div>
+              <p style={{ margin: "8px 0 0", color: "var(--muted)", lineHeight: 1.6 }}>{item.note}</p>
+            </article>
+          ))}
+        </div>
       </CardSection>
 
-      <CardSection title="Owner Directory">
+      <CardSection id="owner-directory" title="Owner Directory">
+        <p style={{ ...metaTextStyle, marginTop: 0, marginBottom: 16, lineHeight: 1.7 }}>
+          Use this view to confirm which owners are active, how much inventory they carry, and whether billing settings are complete before month-end.
+        </p>
         {owners.length === 0 ? (
           <div className="stocker-empty-state" style={emptyStateStyle}>
             <strong style={{ display: "block", marginBottom: 8 }}>No owners yet.</strong>
@@ -275,69 +258,123 @@ export default async function OwnersPage() {
         )}
       </CardSection>
 
-      <CardSection title="Edit Owner Profiles">
-        {owners.length === 0 ? (
-          <div className="stocker-empty-state" style={emptyStateStyle}>No owners to edit yet.</div>
-        ) : (
-          <div style={stackStyle}>
-            {owners.map((owner) => (
-              <article key={owner.id} className="stocker-card" style={cardStyle}>
-                <form action={updateOwner} style={stackStyle}>
-                  <input type="hidden" name="ownerId" value={owner.id} />
-                  <div style={gridStyle}>
-                    <Input label="Owner Name" name="name" defaultValue={owner.name} required style={inputStyle} />
-                    <Input
-                      label="Yardage Rate ($ per head/day)"
-                      name="yardageRatePerHeadDay"
-                      defaultValue={owner.yardageRatePerHeadDay ?? ""}
-                      inputMode="decimal"
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      style={inputStyle}
-                    />
-                  <Input
-                    label="Medicine Markup %"
-                    name="medicineMarkupPercent"
-                      defaultValue={owner.medicineMarkupPercent}
-                      inputMode="decimal"
-                      type="number"
-                      min="0"
-                    step="0.01"
-                    style={inputStyle}
-                  />
-                  <Textarea
-                    label="Billing Address"
-                    name="billingAddress"
-                    rows={3}
-                    defaultValue={owner.billingAddress ?? ""}
-                    style={{ ...inputStyle, resize: "vertical" }}
-                  />
-                </div>
-                <Textarea
-                  label="Billing Notes"
-                    name="billingNotes"
-                    defaultValue={owner.billingNotes ?? ""}
-                    rows={3}
-                    style={{ ...inputStyle, resize: "vertical" }}
-                  />
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                    <Button type="submit" variant="primary">
-                      Update Owner
-                    </Button>
-                  </div>
-                </form>
+      <CardSection id="owner-setup" title="Owner Setup">
+        <details className="stocker-disclosure">
+          <summary>Open owner creation and profile editing</summary>
+          <div className="stocker-disclosure__body" style={{ display: "grid", gap: 18 }}>
+            <form action={createOwner} style={{ ...stackStyle, maxWidth: 680 }}>
+              <Input label="Owner Name" name="name" placeholder="Walton Marshall" required style={inputStyle} />
+              <Input
+                label="Yardage Rate ($ per head/day)"
+                name="yardageRatePerHeadDay"
+                placeholder="3.00"
+                inputMode="decimal"
+                type="number"
+                min="0"
+                step="0.01"
+                style={inputStyle}
+              />
+              <Input
+                label="Medicine Markup %"
+                name="medicineMarkupPercent"
+                placeholder="0"
+                defaultValue="0"
+                inputMode="decimal"
+                type="number"
+                min="0"
+                step="0.01"
+                style={inputStyle}
+              />
+              <Textarea
+                label="Billing Notes"
+                name="billingNotes"
+                placeholder="Internal billing notes for invoices and owner review."
+                rows={4}
+                style={{ ...inputStyle, resize: "vertical" }}
+              />
+              <Textarea
+                label="Billing Address"
+                name="billingAddress"
+                placeholder={"Walton Marshall\n123 Ranch Road\nAustin, TX 78701"}
+                rows={4}
+                style={{ ...inputStyle, resize: "vertical" }}
+              />
+              <div>
+                <Button type="submit" variant="primary">
+                  Save Owner
+                </Button>
+              </div>
+            </form>
 
-                <form action={deleteOwner} style={{ marginTop: 10 }}>
-                  <input type="hidden" name="ownerId" value={owner.id} />
-                  <Button type="submit" variant="secondary">
-                    Delete
-                  </Button>
-                </form>
-              </article>
-            ))}
+            {owners.length === 0 ? (
+              <div className="stocker-empty-state" style={emptyStateStyle}>No owners to edit yet.</div>
+            ) : (
+              <div style={stackStyle}>
+                {owners.map((owner) => (
+                  <details key={owner.id} className="stocker-disclosure">
+                    <summary>{owner.name}</summary>
+                    <div className="stocker-disclosure__body">
+                    <article className="stocker-card" style={cardStyle}>
+                    <form action={updateOwner} style={stackStyle}>
+                      <input type="hidden" name="ownerId" value={owner.id} />
+                      <div style={gridStyle}>
+                        <Input label="Owner Name" name="name" defaultValue={owner.name} required style={inputStyle} />
+                        <Input
+                          label="Yardage Rate ($ per head/day)"
+                          name="yardageRatePerHeadDay"
+                          defaultValue={owner.yardageRatePerHeadDay ?? ""}
+                          inputMode="decimal"
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          style={inputStyle}
+                        />
+                        <Input
+                          label="Medicine Markup %"
+                          name="medicineMarkupPercent"
+                          defaultValue={owner.medicineMarkupPercent}
+                          inputMode="decimal"
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          style={inputStyle}
+                        />
+                        <Textarea
+                          label="Billing Address"
+                          name="billingAddress"
+                          rows={3}
+                          defaultValue={owner.billingAddress ?? ""}
+                          style={{ ...inputStyle, resize: "vertical" }}
+                        />
+                      </div>
+                      <Textarea
+                        label="Billing Notes"
+                        name="billingNotes"
+                        defaultValue={owner.billingNotes ?? ""}
+                        rows={3}
+                        style={{ ...inputStyle, resize: "vertical" }}
+                      />
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                        <Button type="submit" variant="primary">
+                          Update Owner
+                        </Button>
+                      </div>
+                    </form>
+
+                    <form action={deleteOwner} style={{ marginTop: 10 }}>
+                      <input type="hidden" name="ownerId" value={owner.id} />
+                      <Button type="submit" variant="secondary">
+                        Delete
+                      </Button>
+                    </form>
+                  </article>
+                  </div>
+                  </details>
+                ))}
+              </div>
+            )}
           </div>
-        )}
+        </details>
       </CardSection>
     </main>
   )

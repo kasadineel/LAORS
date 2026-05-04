@@ -1,4 +1,5 @@
 import { revalidatePath } from "next/cache"
+import { redirect } from "next/navigation"
 import { ActionBar } from "@/components/stocker/ActionBar"
 import { CardSection } from "@/components/stocker/CardSection"
 import { PageHeader } from "@/components/stocker/PageHeader"
@@ -8,7 +9,7 @@ import { Input } from "@/components/stocker/ui/Input"
 import { Select } from "@/components/stocker/ui/Select"
 import { InvoiceLineSource, InvoiceStatus, ModuleKey, StockerActivityType } from "@prisma/client"
 import { logStockerActivity } from "@/lib/stocker-activity"
-import { getInvoiceBillingMonth } from "@/lib/stocker-billing"
+import { findExistingNonVoidInvoiceForMonth, getInvoiceBillingMonth, roundMoney } from "@/lib/stocker-billing"
 import { getInvoiceLineSourceLabel, getInvoiceStatusLabel } from "@/lib/stocker-labels"
 import { prisma } from "@/lib/prisma"
 import { requireModuleForOrganization } from "@/lib/module-entitlements"
@@ -97,42 +98,68 @@ export default async function InvoicesPage() {
 
     if (lines.length === 0) return
 
-    const total = lines.reduce((sum, line) => sum + line.amount, 0)
+    const total = roundMoney(lines.reduce((sum, line) => sum + line.amount, 0))
+    const monthValue = getInvoiceBillingMonth(date)
+    const monthStart = new Date(`${monthValue}-01T00:00:00.000Z`)
+    const monthEnd = new Date(monthStart.getUTCFullYear(), monthStart.getUTCMonth() + 1, 1)
 
-    await prisma.invoice.create({
-      data: {
-        ownerId,
-        organizationId: orgId,
-        date,
-        billingMonth: getInvoiceBillingMonth(date),
-        status: InvoiceStatus.DRAFT,
-        total,
-        lines: {
-          create: lines.map((line) => ({
-            ...line,
-            source: InvoiceLineSource.MANUAL,
-            generated: false,
-          })),
+    const invoiceResult = await prisma.$transaction(async (tx) => {
+      const existingInvoice = await findExistingNonVoidInvoiceForMonth(
+        {
+          organizationId: orgId,
+          ownerId,
+          monthStart,
+          monthEnd,
+          monthValue,
         },
-      },
+        tx,
+      )
+
+      if (existingInvoice) {
+        return { id: existingInvoice.id, reused: true as const }
+      }
+
+      const createdInvoice = await tx.invoice.create({
+        data: {
+          ownerId,
+          organizationId: orgId,
+          date,
+          billingMonth: monthValue,
+          status: InvoiceStatus.DRAFT,
+          total,
+          lines: {
+            create: lines.map((line) => ({
+              ...line,
+              source: InvoiceLineSource.MANUAL,
+              generated: false,
+            })),
+          },
+        },
+        select: { id: true },
+      })
+
+      return { id: createdInvoice.id, reused: false as const }
     })
 
-    await logStockerActivity({
-      organizationId: orgId,
-      type: StockerActivityType.INVOICE_CREATED,
-      message: `Created invoice for ${owner.name} totaling $${total.toFixed(2)}.`,
-      metadata: {
-        ownerId,
-        ownerName: owner.name,
-        date: date.toISOString(),
-        total,
-        lineCount: lines.length,
-      },
-      createdByUserId: core.user.id,
-    })
+    if (!invoiceResult.reused) {
+      await logStockerActivity({
+        organizationId: orgId,
+        type: StockerActivityType.INVOICE_CREATED,
+        message: `Created invoice for ${owner.name} totaling $${total.toFixed(2)}.`,
+        metadata: {
+          ownerId,
+          ownerName: owner.name,
+          date: date.toISOString(),
+          total,
+          lineCount: lines.length,
+        },
+        createdByUserId: core.user.id,
+      })
+    }
 
     revalidatePath("/dashboard/stocker/invoices")
     revalidatePath("/dashboard/stocker")
+    redirect(`/dashboard/stocker/invoices?invoiceId=${encodeURIComponent(invoiceResult.id)}`)
   }
 
   async function updateInvoice(formData: FormData) {
@@ -256,55 +283,32 @@ export default async function InvoicesPage() {
   return (
     <main style={pageStyle}>
       <PageHeader
-        title="Invoices"
-        subtitle="Issue and manage billing documents after the monthly review is complete."
+        title="Issue Invoices"
+        subtitle="This page is for the billing document itself. Review charges first, then edit, finalize, print, or void the invoice here."
         badge="Stocker"
       />
       <StatusRow
         organizationName={core.organization.name}
         roleLabel={getRoleDisplayName(core.role)}
       />
-      <ActionBar primaryAction={{ href: "#new-invoice", label: "+ New Invoice" }} />
+      <ActionBar
+        primaryAction={{ href: "/dashboard/stocker/reports", label: "Back to Billing Review" }}
+        secondaryActions={[{ href: "#manual-invoice", label: "Manual Invoice Entry" }]}
+      />
 
-      <CardSection id="new-invoice" title="New Invoice">
-        {owners.length === 0 ? (
-          <div className="stocker-empty-state" style={emptyStateStyle}>Create an owner before billing.</div>
-        ) : (
-          <form action={createInvoice} style={stackStyle}>
-            <div style={gridStyle}>
-              <Select label="Owner" name="ownerId" defaultValue="" style={inputStyle}>
-                <option value="" disabled>
-                  Select owner
-                </option>
-                {owners.map((owner) => (
-                  <option key={owner.id} value={owner.id}>
-                    {owner.name}
-                  </option>
-                ))}
-              </Select>
-              <Input label="Invoice date" name="date" type="date" defaultValue={toDateInputValue(new Date())} style={inputStyle} />
-            </div>
-
-            {Array.from({ length: CREATE_LINE_COUNT }).map((_, index) => (
-              <div key={index} className="stocker-card" style={{ ...cardStyle, padding: 14 }}>
-                <div style={{ fontWeight: 700, marginBottom: 8, color: "var(--stocker-navy)" }}>Line {index + 1}</div>
-                <div style={gridStyle}>
-                  <Input label="Description" name={`new_description_${index}`} style={inputStyle} />
-                  <Input label="Quantity" name={`new_quantity_${index}`} inputMode="decimal" style={inputStyle} />
-                  <Input label="Weight" name={`new_weight_${index}`} inputMode="decimal" style={inputStyle} />
-                  <Input label="Price" name={`new_price_${index}`} inputMode="decimal" style={inputStyle} />
-                  <Input label="Amount" name={`new_amount_${index}`} inputMode="decimal" style={inputStyle} />
-                </div>
-              </div>
-            ))}
-
-            <div>
-              <Button type="submit" variant="primary">
-                Save Invoice
-              </Button>
-            </div>
-          </form>
-        )}
+      <CardSection title="Invoice Workflow">
+        <div style={{ display: "grid", gap: 16, gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", marginBottom: 16 }}>
+          {[
+            { label: "1. Review Charges", note: "Use Billing Review to confirm yardage, feed, and treatment totals before opening a document." },
+            { label: "2. Work the Draft", note: "Edit manual lines only when needed. Generated lines should stay tied to the review flow." },
+            { label: "3. Finalize or Print", note: "Once the draft is right, finalize it and print the billing document." },
+          ].map((item) => (
+            <article key={item.label} className="stocker-card" style={{ ...cardStyle, padding: 18 }}>
+              <div style={{ fontWeight: 700, color: "var(--ink)" }}>{item.label}</div>
+              <p style={{ margin: "10px 0 0", color: "var(--muted)", lineHeight: 1.6 }}>{item.note}</p>
+            </article>
+          ))}
+        </div>
       </CardSection>
 
       <CardSection title="Active Invoice Ledger">
@@ -474,6 +478,62 @@ export default async function InvoicesPage() {
             ))}
           </div>
         )}
+      </CardSection>
+
+      <CardSection id="manual-invoice" title="Manual Invoice Entry">
+        <details
+          style={{
+            border: "1px solid rgba(16, 42, 67, 0.08)",
+            borderRadius: 16,
+            padding: 14,
+            background: "rgba(255, 255, 255, 0.7)",
+          }}
+        >
+          <summary style={{ cursor: "pointer", fontWeight: 700, color: "var(--ink)" }}>
+            Open one-off manual invoice form
+          </summary>
+          <p style={{ ...metaTextStyle, marginTop: 12, marginBottom: 16, lineHeight: 1.7 }}>
+            Use this only for one-off billing that does not belong in the normal owner-month review flow.
+          </p>
+          {owners.length === 0 ? (
+            <div className="stocker-empty-state" style={emptyStateStyle}>Create an owner before billing.</div>
+          ) : (
+            <form action={createInvoice} style={stackStyle}>
+              <div style={gridStyle}>
+                <Select label="Owner" name="ownerId" defaultValue="" style={inputStyle}>
+                  <option value="" disabled>
+                    Select owner
+                  </option>
+                  {owners.map((owner) => (
+                    <option key={owner.id} value={owner.id}>
+                      {owner.name}
+                    </option>
+                  ))}
+                </Select>
+                <Input label="Invoice date" name="date" type="date" defaultValue={toDateInputValue(new Date())} style={inputStyle} />
+              </div>
+
+              {Array.from({ length: CREATE_LINE_COUNT }).map((_, index) => (
+                <div key={index} className="stocker-card" style={{ ...cardStyle, padding: 14 }}>
+                  <div style={{ fontWeight: 700, marginBottom: 8, color: "var(--stocker-navy)" }}>Line {index + 1}</div>
+                  <div style={gridStyle}>
+                    <Input label="Description" name={`new_description_${index}`} style={inputStyle} />
+                    <Input label="Quantity" name={`new_quantity_${index}`} inputMode="decimal" style={inputStyle} />
+                    <Input label="Weight" name={`new_weight_${index}`} inputMode="decimal" style={inputStyle} />
+                    <Input label="Price" name={`new_price_${index}`} inputMode="decimal" style={inputStyle} />
+                    <Input label="Amount" name={`new_amount_${index}`} inputMode="decimal" style={inputStyle} />
+                  </div>
+                </div>
+              ))}
+
+              <div>
+                <Button type="submit" variant="primary">
+                  Save Invoice
+                </Button>
+              </div>
+            </form>
+          )}
+        </details>
       </CardSection>
 
       {voidedInvoices.length > 0 ? (

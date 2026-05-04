@@ -1,19 +1,21 @@
 import { redirect, notFound } from "next/navigation"
-import { currentUser } from "@clerk/nextjs/server"
 import { ModuleKey } from "@prisma/client"
-import { ensureCore } from "@/lib/ensure-core"
 import { requireModuleForOrganization } from "@/lib/module-entitlements"
 import { prisma } from "@/lib/prisma"
+import { normalizeAnimalEventType } from "@/lib/animal-events"
+import { requireStockerAccess } from "@/lib/stocker"
+import { ActionBar } from "@/components/stocker/ActionBar"
+import { CardSection } from "@/components/stocker/CardSection"
+import { PageHeader } from "@/components/stocker/PageHeader"
+import { StatusRow } from "@/components/stocker/StatusRow"
+import { Button } from "@/components/stocker/ui/Button"
+import { Input } from "@/components/stocker/ui/Input"
+import { Textarea } from "@/components/stocker/ui/Textarea"
+import { getRoleDisplayName } from "@/lib/permissions"
+import { inputStyle, pageStyle, stackStyle } from "@/lib/stocker-ui"
 
 export default async function LogWeightPage({ params }: { params: { id: string } }) {
-  const user = await currentUser()
-  if (!user) return null
-
-  const core = await ensureCore({
-    clerkUserId: user.id,
-    email: user.emailAddresses[0]?.emailAddress ?? "",
-    name: [user.firstName, user.lastName].filter(Boolean).join(" ") || null,
-  })
+  const core = await requireStockerAccess()
   await requireModuleForOrganization(core.activeOrganizationId, ModuleKey.STOCKER)
 
   const animal = await prisma.animal.findFirst({
@@ -45,7 +47,7 @@ export default async function LogWeightPage({ params }: { params: { id: string }
 
     await prisma.event.create({
       data: {
-        type: "WEIGHT",
+        type: normalizeAnimalEventType("WEIGHT"),
         value,
         notes,
         animalId,
@@ -58,35 +60,38 @@ export default async function LogWeightPage({ params }: { params: { id: string }
   }
 
   return (
-    <main style={{ padding: 24, maxWidth: 560 }}>
-      <h1>Log Weight</h1>
-      <p style={{ marginTop: 6 }}>
-        {animalTagNumber ? `#${animalTagNumber}` : "Animal"} {animalName ? `— ${animalName}` : ""}
-      </p>
+    <main style={pageStyle}>
+      <PageHeader
+        title="Log Weight"
+        subtitle="Add a dated weight record to this animal so gain and history stay tied to the record."
+        badge="Core Records"
+      />
+      <StatusRow organizationName={core.organization.name} roleLabel={getRoleDisplayName(core.role)} />
+      <ActionBar primaryAction={{ href: `/dashboard/animals/${animalId}`, label: "Back to Animal" }} />
 
-      <form action={logWeight} style={{ display: "grid", gap: 12, marginTop: 16 }}>
-        <label>
-          Weight
-          <input
+      <CardSection title={`${animalTagNumber ? `#${animalTagNumber}` : "Animal"} ${animalName ? `· ${animalName}` : ""}`}>
+        <form action={logWeight} style={{ ...stackStyle, maxWidth: 560 }}>
+          <Input
+            label="Weight"
             name="weight"
             placeholder="e.g. 642.5"
-            style={{ display: "block", width: "100%", padding: 8 }}
+            inputMode="decimal"
+            style={inputStyle}
           />
-        </label>
-
-        <label>
-          Notes (optional)
-          <input
+          <Textarea
+            label="Notes"
             name="notes"
             placeholder="Morning weigh-in"
-            style={{ display: "block", width: "100%", padding: 8 }}
+            rows={3}
+            style={inputStyle}
           />
-        </label>
-
-        <button type="submit" style={{ padding: 10 }}>
-          Save
-        </button>
-      </form>
+          <div>
+            <Button type="submit" variant="primary">
+              Save Weight
+            </Button>
+          </div>
+        </form>
+      </CardSection>
     </main>
   )
 }

@@ -145,6 +145,22 @@ export default async function FeedPage({ searchParams }: FeedPageProps) {
     }),
   ])
 
+  const sharedPenHealth = pens
+    .map((pen) => {
+      const activeRuleTotal = rules
+        .filter((rule) => rule.penId === pen.id && rule.effectiveStartDate <= selectedDate && (!rule.effectiveEndDate || rule.effectiveEndDate >= selectedDate))
+        .reduce((sum, rule) => sum + rule.allocationPercent, 0)
+
+      return {
+        penId: pen.id,
+        penName: pen.name,
+        activeRuleTotal,
+      }
+    })
+    .filter((pen) => pen.activeRuleTotal > 0 && Math.abs(pen.activeRuleTotal - 100) > 0.25)
+
+  const activeRationCount = rations.filter((ration) => ration.isActive).length
+
   async function createFeedEntries(formData: FormData) {
     "use server"
 
@@ -395,7 +411,7 @@ export default async function FeedPage({ searchParams }: FeedPageProps) {
     <main style={pageStyle}>
       <PageHeader
         title="Feed"
-        subtitle="Record daily pen feed, manage ration pricing, and define how shared-pen feed is allocated to owners."
+        subtitle="Enter daily feed first. Open ration pricing and allocation setup only when the yard needs support detail."
         badge="Stocker"
       />
       <StatusRow
@@ -405,8 +421,56 @@ export default async function FeedPage({ searchParams }: FeedPageProps) {
       />
       <ActionBar
         primaryAction={{ href: "#daily-feed", label: "+ Daily Feed Entry" }}
-        secondaryActions={[{ href: "/dashboard/stocker/feed/monthly", label: "Monthly Feed Summary" }]}
+        secondaryActions={[
+          { href: "/dashboard/stocker/feed/monthly", label: "Monthly Feed Summary" },
+          { href: "#feed-setup", label: "Feed Setup" },
+        ]}
       />
+
+      <CardSection title="Feed Priorities">
+        <div style={{ display: "grid", gap: 14, gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
+          {[
+            {
+              label: "Pens Ready",
+              value: `${pens.length}`,
+              note: pens.length === 0 ? "Create pens before recording feed." : "Pens available for daily feed entry.",
+            },
+            {
+              label: "Active Rations",
+              value: `${activeRationCount}`,
+              note: activeRationCount === 0 ? "No active ration cost is available for entry." : "Active ration cost snapshots are ready to use.",
+            },
+            {
+              label: "Allocation Rules",
+              value: `${rules.length}`,
+              note: rules.length === 0 ? "Single-owner pens still allocate automatically." : "Shared-pen allocation rules are on file.",
+            },
+            {
+              label: "Feed Logged Today",
+              value: `${feedEntries.length}`,
+              note: feedEntries.length === 0 ? "No feed has been entered for this date yet." : "Daily feed entries already exist for this date.",
+            },
+          ].map((item) => (
+            <article key={item.label} className="stocker-card" style={{ ...cardStyle, padding: 16 }}>
+              <div style={{ fontWeight: 700, color: "var(--ink)" }}>{item.label}</div>
+              <div style={{ marginTop: 8, fontWeight: 800, fontSize: 22, color: "var(--ink)" }}>{item.value}</div>
+              <div style={{ ...metaTextStyle, marginTop: 8, lineHeight: 1.6 }}>{item.note}</div>
+            </article>
+          ))}
+        </div>
+        {sharedPenHealth.length > 0 ? (
+          <div style={{ ...stackStyle, marginTop: 16 }}>
+            {sharedPenHealth.map((pen) => (
+              <div key={pen.penId} className="stocker-card" style={{ ...cardStyle, padding: 16 }}>
+                <div style={{ fontWeight: 700, color: "var(--ink)" }}>{pen.penName} needs allocation cleanup</div>
+                <div style={{ ...metaTextStyle, marginTop: 8, color: "var(--primary)" }}>
+                  Active allocation rules total {pen.activeRuleTotal.toFixed(2)}% for the selected date. Shared pens should total 100%.
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </CardSection>
 
       {notice ? (
         <CardSection title="Feed Status">
@@ -479,144 +543,156 @@ export default async function FeedPage({ searchParams }: FeedPageProps) {
         )}
       </CardSection>
 
-      <CardSection title="Ration Costs">
-        <div style={stackStyle}>
-          <form action={createRationCost} style={{ ...stackStyle, maxWidth: 760 }}>
-            <div style={gridStyle}>
-              <Input label="Ration Name" name="name" placeholder="Grower Ration" required style={inputStyle} />
-              <Input label="Cost Per Ton" name="costPerTon" type="number" min="0" step="0.01" inputMode="decimal" required style={inputStyle} />
-              <Input label="Effective Start" name="effectiveStartDate" type="date" defaultValue={toDateInputValue(selectedDate)} required style={inputStyle} />
-              <Input label="Effective End" name="effectiveEndDate" type="date" style={inputStyle} />
-              <Select label="Status" name="status" defaultValue="active" style={inputStyle}>
-                <option value="active">Active</option>
-                <option value="inactive">Inactive</option>
-              </Select>
-            </div>
-            <Textarea label="Notes" name="notes" rows={3} style={inputStyle} />
-            <div>
-              <Button type="submit" variant="primary">
-                Save Ration
-              </Button>
-            </div>
-          </form>
-
-          {rations.length === 0 ? (
-            <div className="stocker-empty-state" style={emptyStateStyle}>No ration costs saved yet.</div>
-          ) : (
+      <CardSection id="feed-setup" title="Feed Setup">
+        <details
+          style={{
+            border: "1px solid rgba(16, 42, 67, 0.08)",
+            borderRadius: 16,
+            padding: 14,
+            background: "rgba(255, 255, 255, 0.7)",
+          }}
+        >
+          <summary style={{ cursor: "pointer", fontWeight: 700, color: "var(--ink)" }}>
+            Open ration pricing and feed allocation setup
+          </summary>
+          <div style={{ display: "grid", gap: 18, marginTop: 14 }}>
             <div style={stackStyle}>
-              {rations.map((ration) => (
-                <article key={ration.id} className="stocker-card" style={cardStyle}>
-                  <form action={updateRationCost} style={stackStyle}>
-                    <input type="hidden" name="rationId" value={ration.id} />
-                    <div style={gridStyle}>
-                      <Input label="Ration Name" name="name" defaultValue={ration.name} required style={inputStyle} />
-                      <Input label="Cost Per Ton" name="costPerTon" type="number" min="0" step="0.01" inputMode="decimal" defaultValue={ration.costPerTon} required style={inputStyle} />
-                      <Input label="Effective Start" name="effectiveStartDate" type="date" defaultValue={toDateInputValue(ration.effectiveStartDate)} required style={inputStyle} />
-                      <Input label="Effective End" name="effectiveEndDate" type="date" defaultValue={toDateInputValue(ration.effectiveEndDate)} style={inputStyle} />
-                      <Select label="Status" name="status" defaultValue={ration.isActive ? "active" : "inactive"} style={inputStyle}>
-                        <option value="active">Active</option>
-                        <option value="inactive">Inactive</option>
-                      </Select>
-                    </div>
-                    <Textarea label="Notes" name="notes" rows={2} defaultValue={ration.notes ?? ""} style={inputStyle} />
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
-                      <div style={metaTextStyle}>
-                        ${ration.costPerTon.toFixed(2)} / ton · {ration.effectiveStartDate.toLocaleDateString()}
-                        {ration.effectiveEndDate ? ` to ${ration.effectiveEndDate.toLocaleDateString()}` : " forward"}
-                      </div>
-                      <Button type="submit" variant="secondary">
-                        Update Ration
-                      </Button>
-                    </div>
-                  </form>
-                </article>
-              ))}
+              <form action={createRationCost} style={{ ...stackStyle, maxWidth: 760 }}>
+                <div style={gridStyle}>
+                  <Input label="Ration Name" name="name" placeholder="Grower Ration" required style={inputStyle} />
+                  <Input label="Cost Per Ton" name="costPerTon" type="number" min="0" step="0.01" inputMode="decimal" required style={inputStyle} />
+                  <Input label="Effective Start" name="effectiveStartDate" type="date" defaultValue={toDateInputValue(selectedDate)} required style={inputStyle} />
+                  <Input label="Effective End" name="effectiveEndDate" type="date" style={inputStyle} />
+                  <Select label="Status" name="status" defaultValue="active" style={inputStyle}>
+                    <option value="active">Active</option>
+                    <option value="inactive">Inactive</option>
+                  </Select>
+                </div>
+                <Textarea label="Notes" name="notes" rows={3} style={inputStyle} />
+                <div>
+                  <Button type="submit" variant="primary">
+                    Save Ration
+                  </Button>
+                </div>
+              </form>
+
+              {rations.length === 0 ? (
+                <div className="stocker-empty-state" style={emptyStateStyle}>No ration costs saved yet.</div>
+              ) : (
+                <div style={stackStyle}>
+                  {rations.map((ration) => (
+                    <article key={ration.id} className="stocker-card" style={cardStyle}>
+                      <form action={updateRationCost} style={stackStyle}>
+                        <input type="hidden" name="rationId" value={ration.id} />
+                        <div style={gridStyle}>
+                          <Input label="Ration Name" name="name" defaultValue={ration.name} required style={inputStyle} />
+                          <Input label="Cost Per Ton" name="costPerTon" type="number" min="0" step="0.01" inputMode="decimal" defaultValue={ration.costPerTon} required style={inputStyle} />
+                          <Input label="Effective Start" name="effectiveStartDate" type="date" defaultValue={toDateInputValue(ration.effectiveStartDate)} required style={inputStyle} />
+                          <Input label="Effective End" name="effectiveEndDate" type="date" defaultValue={toDateInputValue(ration.effectiveEndDate)} style={inputStyle} />
+                          <Select label="Status" name="status" defaultValue={ration.isActive ? "active" : "inactive"} style={inputStyle}>
+                            <option value="active">Active</option>
+                            <option value="inactive">Inactive</option>
+                          </Select>
+                        </div>
+                        <Textarea label="Notes" name="notes" rows={2} defaultValue={ration.notes ?? ""} style={inputStyle} />
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
+                          <div style={metaTextStyle}>
+                            ${ration.costPerTon.toFixed(2)} / ton · {ration.effectiveStartDate.toLocaleDateString()}
+                            {ration.effectiveEndDate ? ` to ${ration.effectiveEndDate.toLocaleDateString()}` : " forward"}
+                          </div>
+                          <Button type="submit" variant="secondary">
+                            Update Ration
+                          </Button>
+                        </div>
+                      </form>
+                    </article>
+                  ))}
+                </div>
+              )}
             </div>
-          )}
-        </div>
-      </CardSection>
 
-      <CardSection title="Feed Allocation Rules">
-        {pens.length === 0 || owners.length === 0 ? (
-          <div className="stocker-empty-state" style={emptyStateStyle}>
-            Create at least one pen and one owner before defining feed allocation rules.
-          </div>
-        ) : (
-          <div style={stackStyle}>
-            <form action={createAllocationRule} style={{ ...stackStyle, maxWidth: 760 }}>
-              <div style={gridStyle}>
-                <Select label="Pen" name="penId" defaultValue="" required style={inputStyle}>
-                  <option value="" disabled>
-                    Select pen
-                  </option>
-                  {pens.map((pen) => (
-                    <option key={pen.id} value={pen.id}>
-                      {pen.name}
-                    </option>
-                  ))}
-                </Select>
-                <Select label="Owner" name="ownerId" defaultValue="" required style={inputStyle}>
-                  <option value="" disabled>
-                    Select owner
-                  </option>
-                  {owners.map((owner) => (
-                    <option key={owner.id} value={owner.id}>
-                      {owner.name}
-                    </option>
-                  ))}
-                </Select>
-                <Input label="Allocation %" name="allocationPercent" type="number" min="0.01" max="100" step="0.01" inputMode="decimal" required style={inputStyle} />
-                <Input label="Effective Start" name="effectiveStartDate" type="date" defaultValue={toDateInputValue(selectedDate)} required style={inputStyle} />
-                <Input label="Effective End" name="effectiveEndDate" type="date" style={inputStyle} />
-              </div>
-              <Textarea label="Notes" name="notes" rows={2} style={inputStyle} />
-              <div>
-                <Button type="submit" variant="primary">
-                  Save Allocation Rule
-                </Button>
-              </div>
-            </form>
-
-            {rules.length === 0 ? (
+            {pens.length === 0 || owners.length === 0 ? (
               <div className="stocker-empty-state" style={emptyStateStyle}>
-                No shared-pen allocation rules yet. Single-owner pens allocate automatically.
+                Create at least one pen and one owner before defining feed allocation rules.
               </div>
             ) : (
               <div style={stackStyle}>
-                {rules.map((rule) => (
-                  <article key={rule.id} className="stocker-card" style={cardStyle}>
-                    <form action={updateAllocationRule} style={stackStyle}>
-                      <input type="hidden" name="ruleId" value={rule.id} />
-                      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-                        <div>
-                          <strong style={{ color: "var(--stocker-navy)" }}>
-                            {rule.pen.name} → {rule.owner.name}
-                          </strong>
-                          <div style={metaTextStyle}>
-                            Effective {rule.effectiveStartDate.toLocaleDateString()}
-                            {rule.effectiveEndDate ? ` to ${rule.effectiveEndDate.toLocaleDateString()}` : " forward"}
+                <form action={createAllocationRule} style={{ ...stackStyle, maxWidth: 760 }}>
+                  <div style={gridStyle}>
+                    <Select label="Pen" name="penId" defaultValue="" required style={inputStyle}>
+                      <option value="" disabled>
+                        Select pen
+                      </option>
+                      {pens.map((pen) => (
+                        <option key={pen.id} value={pen.id}>
+                          {pen.name}
+                        </option>
+                      ))}
+                    </Select>
+                    <Select label="Owner" name="ownerId" defaultValue="" required style={inputStyle}>
+                      <option value="" disabled>
+                        Select owner
+                      </option>
+                      {owners.map((owner) => (
+                        <option key={owner.id} value={owner.id}>
+                          {owner.name}
+                        </option>
+                      ))}
+                    </Select>
+                    <Input label="Allocation %" name="allocationPercent" type="number" min="0.01" max="100" step="0.01" inputMode="decimal" required style={inputStyle} />
+                    <Input label="Effective Start" name="effectiveStartDate" type="date" defaultValue={toDateInputValue(selectedDate)} required style={inputStyle} />
+                    <Input label="Effective End" name="effectiveEndDate" type="date" style={inputStyle} />
+                  </div>
+                  <Textarea label="Notes" name="notes" rows={2} style={inputStyle} />
+                  <div>
+                    <Button type="submit" variant="primary">
+                      Save Allocation Rule
+                    </Button>
+                  </div>
+                </form>
+
+                {rules.length === 0 ? (
+                  <div className="stocker-empty-state" style={emptyStateStyle}>
+                    No shared-pen allocation rules yet. Single-owner pens allocate automatically.
+                  </div>
+                ) : (
+                  <div style={stackStyle}>
+                    {rules.map((rule) => (
+                      <article key={rule.id} className="stocker-card" style={cardStyle}>
+                        <form action={updateAllocationRule} style={stackStyle}>
+                          <input type="hidden" name="ruleId" value={rule.id} />
+                          <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+                            <div>
+                              <strong style={{ color: "var(--stocker-navy)" }}>
+                                {rule.pen.name} → {rule.owner.name}
+                              </strong>
+                              <div style={metaTextStyle}>
+                                Effective {rule.effectiveStartDate.toLocaleDateString()}
+                                {rule.effectiveEndDate ? ` to ${rule.effectiveEndDate.toLocaleDateString()}` : " forward"}
+                              </div>
+                            </div>
+                            <div style={{ fontWeight: 700, color: "var(--ink)" }}>{rule.allocationPercent.toFixed(2)}%</div>
                           </div>
-                        </div>
-                        <div style={{ fontWeight: 700, color: "var(--ink)" }}>{rule.allocationPercent.toFixed(2)}%</div>
-                      </div>
-                      <div style={gridStyle}>
-                        <Input label="Allocation %" name="allocationPercent" type="number" min="0.01" max="100" step="0.01" inputMode="decimal" defaultValue={rule.allocationPercent} required style={inputStyle} />
-                        <Input label="Effective Start" name="effectiveStartDate" type="date" defaultValue={toDateInputValue(rule.effectiveStartDate)} required style={inputStyle} />
-                        <Input label="Effective End" name="effectiveEndDate" type="date" defaultValue={toDateInputValue(rule.effectiveEndDate)} style={inputStyle} />
-                      </div>
-                      <Textarea label="Notes" name="notes" rows={2} defaultValue={rule.notes ?? ""} style={inputStyle} />
-                      <div>
-                        <Button type="submit" variant="secondary">
-                          Update Rule
-                        </Button>
-                      </div>
-                    </form>
-                  </article>
-                ))}
+                          <div style={gridStyle}>
+                            <Input label="Allocation %" name="allocationPercent" type="number" min="0.01" max="100" step="0.01" inputMode="decimal" defaultValue={rule.allocationPercent} required style={inputStyle} />
+                            <Input label="Effective Start" name="effectiveStartDate" type="date" defaultValue={toDateInputValue(rule.effectiveStartDate)} required style={inputStyle} />
+                            <Input label="Effective End" name="effectiveEndDate" type="date" defaultValue={toDateInputValue(rule.effectiveEndDate)} style={inputStyle} />
+                          </div>
+                          <Textarea label="Notes" name="notes" rows={2} defaultValue={rule.notes ?? ""} style={inputStyle} />
+                          <div>
+                            <Button type="submit" variant="secondary">
+                              Update Rule
+                            </Button>
+                          </div>
+                        </form>
+                      </article>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </div>
-        )}
+        </details>
       </CardSection>
 
       <CardSection title={`Feed Log for ${dayStart.toLocaleDateString()}`}>
@@ -625,34 +701,46 @@ export default async function FeedPage({ searchParams }: FeedPageProps) {
             No feed entries were logged for this date.
           </div>
         ) : (
-          <Table className="stocker-desktop-table" style={tableContainerStyle}>
-            <thead>
-              <tr>
-                <th style={{ padding: "8px 0" }}>Pen</th>
-                <th style={{ padding: "8px 0" }}>Ration</th>
-                <th style={{ padding: "8px 0" }}>Amount</th>
-                <th style={{ padding: "8px 0" }}>Tons</th>
-                <th style={{ padding: "8px 0" }}>Cost / Ton</th>
-                <th style={{ padding: "8px 0" }}>Total Cost</th>
-                <th style={{ padding: "8px 0" }}>Entered By</th>
-              </tr>
-            </thead>
-            <tbody>
-              {feedEntries.map((entry) => (
-                <tr key={entry.id}>
-                  <td style={{ padding: "10px 0" }}>{entry.pen.name}</td>
-                  <td style={{ padding: "10px 0" }}>{entry.ration.name}</td>
-                  <td style={{ padding: "10px 0" }}>
-                    {formatFeedLbs(entry.amount)} {entry.notes ? `· ${entry.notes}` : ""}
-                  </td>
-                  <td style={{ padding: "10px 0" }}>{formatFeedTons(entry.amount / 2000)}</td>
-                  <td style={{ padding: "10px 0" }}>${entry.costPerTonSnapshot.toFixed(2)}</td>
-                  <td style={{ padding: "10px 0" }}>${entry.totalCostSnapshot.toFixed(2)}</td>
-                  <td style={{ padding: "10px 0" }}>{entry.createdBy?.name || entry.createdBy?.email || "System"}</td>
+          <details
+            style={{
+              border: "1px solid rgba(16, 42, 67, 0.08)",
+              borderRadius: 16,
+              padding: 14,
+              background: "rgba(255, 255, 255, 0.7)",
+            }}
+          >
+            <summary style={{ cursor: "pointer", fontWeight: 700, color: "var(--ink)" }}>
+              View {feedEntries.length} feed entr{feedEntries.length === 1 ? "y" : "ies"} for this day
+            </summary>
+            <Table className="stocker-desktop-table" style={{ ...tableContainerStyle, marginTop: 14 }}>
+              <thead>
+                <tr>
+                  <th style={{ padding: "8px 0" }}>Pen</th>
+                  <th style={{ padding: "8px 0" }}>Ration</th>
+                  <th style={{ padding: "8px 0" }}>Amount</th>
+                  <th style={{ padding: "8px 0" }}>Tons</th>
+                  <th style={{ padding: "8px 0" }}>Cost / Ton</th>
+                  <th style={{ padding: "8px 0" }}>Total Cost</th>
+                  <th style={{ padding: "8px 0" }}>Entered By</th>
                 </tr>
-              ))}
-            </tbody>
-          </Table>
+              </thead>
+              <tbody>
+                {feedEntries.map((entry) => (
+                  <tr key={entry.id}>
+                    <td style={{ padding: "10px 0" }}>{entry.pen.name}</td>
+                    <td style={{ padding: "10px 0" }}>{entry.ration.name}</td>
+                    <td style={{ padding: "10px 0" }}>
+                      {formatFeedLbs(entry.amount)} {entry.notes ? `· ${entry.notes}` : ""}
+                    </td>
+                    <td style={{ padding: "10px 0" }}>{formatFeedTons(entry.amount / 2000)}</td>
+                    <td style={{ padding: "10px 0" }}>${entry.costPerTonSnapshot.toFixed(2)}</td>
+                    <td style={{ padding: "10px 0" }}>${entry.totalCostSnapshot.toFixed(2)}</td>
+                    <td style={{ padding: "10px 0" }}>{entry.createdBy?.name || entry.createdBy?.email || "System"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </Table>
+          </details>
         )}
         {feedEntries.length > 0 ? (
           <div style={{ ...metaTextStyle, marginTop: 12 }}>

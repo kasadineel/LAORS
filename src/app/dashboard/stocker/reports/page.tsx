@@ -12,7 +12,7 @@ import { getInvoiceStatusLabel, formatAverageWeightLbs, formatLotLabel, formatTo
 import { requireModuleForOrganization } from "@/lib/module-entitlements"
 import { getRoleDisplayName, requireRole, ROLE_MANAGER, ROLE_OWNER } from "@/lib/permissions"
 import { prisma } from "@/lib/prisma"
-import { buildDraftInvoiceLines, getDraftInvoiceDate, getInvoiceBillingMonth, getOwnerFinancialSummary } from "@/lib/stocker-billing"
+import { buildDraftInvoiceLines, findExistingNonVoidInvoiceForMonth, getDraftInvoiceDate, getInvoiceBillingMonth, getOwnerFinancialSummary, roundMoney } from "@/lib/stocker-billing"
 import { logStockerActivity } from "@/lib/stocker-activity"
 import { getEffectiveOutHeadCount } from "@/lib/stocker-weights"
 import { getMonthWindow, requireStockerAccess } from "@/lib/stocker"
@@ -112,48 +112,71 @@ export default async function ReportsPage({ searchParams }: ReportsPageProps) {
     }
 
     const invoiceDate = getDraftInvoiceDate(draftSummary.monthValue)
-    const total = lines.reduce((sum, line) => sum + line.amount, 0)
+    const { monthStart, monthEnd } = getMonthWindow(draftSummary.monthValue)
+    const total = roundMoney(lines.reduce((sum, line) => sum + line.amount, 0))
 
-    await prisma.invoice.create({
-      data: {
-        ownerId: draftSummary.owner.id,
-        organizationId: orgId,
-        date: invoiceDate,
-        billingMonth: getInvoiceBillingMonth(invoiceDate),
-        status: InvoiceStatus.DRAFT,
-        total,
-        lines: {
-          create: lines,
+    const invoiceResult = await prisma.$transaction(async (tx) => {
+      const existingInvoice = await findExistingNonVoidInvoiceForMonth(
+        {
+          organizationId: orgId,
+          ownerId: draftSummary.owner.id,
+          monthStart,
+          monthEnd,
+          monthValue: draftSummary.monthValue,
         },
-      },
+        tx,
+      )
+
+      if (existingInvoice) {
+        return { id: existingInvoice.id, reused: true as const }
+      }
+
+      const createdInvoice = await tx.invoice.create({
+        data: {
+          ownerId: draftSummary.owner.id,
+          organizationId: orgId,
+          date: invoiceDate,
+          billingMonth: getInvoiceBillingMonth(invoiceDate),
+          status: InvoiceStatus.DRAFT,
+          total,
+          lines: {
+            create: lines,
+          },
+        },
+        select: { id: true },
+      })
+
+      return { id: createdInvoice.id, reused: false as const }
     })
 
-    await logStockerActivity({
-      organizationId: orgId,
-      type: StockerActivityType.INVOICE_CREATED,
-      message: `Generated draft invoice for ${draftSummary.owner.name} totaling $${total.toFixed(2)}.`,
-      metadata: {
-        ownerId: draftSummary.owner.id,
-        ownerName: draftSummary.owner.name,
-        month: draftSummary.monthValue,
-        lineCount: lines.length,
-        total,
-        source: "owner-financial-summary",
-      },
-      createdByUserId: userId,
-    })
+    if (!invoiceResult.reused) {
+      await logStockerActivity({
+        organizationId: orgId,
+        type: StockerActivityType.INVOICE_CREATED,
+        message: `Generated draft invoice for ${draftSummary.owner.name} totaling $${total.toFixed(2)}.`,
+        metadata: {
+          ownerId: draftSummary.owner.id,
+          ownerName: draftSummary.owner.name,
+          month: draftSummary.monthValue,
+          lineCount: lines.length,
+          total,
+          source: "owner-financial-summary",
+        },
+        createdByUserId: userId,
+      })
+    }
 
     revalidatePath("/dashboard/stocker")
     revalidatePath("/dashboard/stocker/reports")
     revalidatePath("/dashboard/stocker/invoices")
-    redirect("/dashboard/stocker/invoices")
+    redirect(`/dashboard/stocker/invoices?invoiceId=${encodeURIComponent(invoiceResult.id)}`)
   }
 
   return (
     <main style={pageStyle}>
       <PageHeader
-        title="Reports"
-        subtitle="Review monthly owner charges and understand the numbers before you open or generate billing documents."
+        title="Review Billing"
+        subtitle="Use this page to explain the monthly number first. Once the charges look right, move forward into the invoice document."
         badge="Stocker"
       />
       <StatusRow
@@ -162,14 +185,14 @@ export default async function ReportsPage({ searchParams }: ReportsPageProps) {
         monthLabel={label}
       />
       <ActionBar
-        primaryAction={{ href: "/dashboard/stocker/reports/owner-statement", label: "Owner Statement CSV" }}
+        primaryAction={{ href: "/dashboard/stocker/invoices", label: "Issue Invoices" }}
         secondaryActions={[
           { href: "/dashboard/stocker/feed/monthly", label: "Feed Summary" },
-          { href: "/dashboard/stocker/invoices", label: "Open Invoice Documents" },
+          { href: "/dashboard/stocker/reports/owner-statement", label: "Owner Statement CSV" },
         ]}
       />
 
-      <CardSection title="Owner Billing Review">
+      <CardSection title="Start Billing Review">
         {owners.length === 0 ? (
           <div className="stocker-empty-state" style={emptyStateStyle}>
             <strong style={{ display: "block", marginBottom: 8 }}>No owners yet.</strong>
@@ -201,9 +224,32 @@ export default async function ReportsPage({ searchParams }: ReportsPageProps) {
 
       {summary ? (
         <>
-          <CardSection
-            title={`Monthly Owner Financial Summary: ${summary.owner.name}`}
-          >
+          <CardSection title="Billing Path">
+            <div style={{ display: "grid", gap: 16, gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))" }}>
+              <div className="stocker-card" style={{ ...cardStyle, padding: 18 }}>
+                <div style={{ fontWeight: 700, color: "var(--ink)" }}>1. Review Month Context</div>
+                <p style={{ marginTop: 10, marginBottom: 0, color: "var(--muted)", lineHeight: 1.7 }}>
+                  {summary.owner.name} · {summary.label} · {summary.lotSummaries.length} lot{summary.lotSummaries.length === 1 ? "" : "s"} contributing to this owner view.
+                </p>
+              </div>
+              <div className="stocker-card" style={{ ...cardStyle, padding: 18 }}>
+                <div style={{ fontWeight: 700, color: "var(--ink)" }}>2. Confirm Charges</div>
+                <p style={{ marginTop: 10, marginBottom: 0, color: "var(--muted)", lineHeight: 1.7 }}>
+                  Yardage, feed, and treatments below are calculated from the current trust layer. Existing invoices are shown separately so you can avoid double billing.
+                </p>
+              </div>
+              <div className="stocker-card" style={{ ...cardStyle, padding: 18 }}>
+                <div style={{ fontWeight: 700, color: "var(--ink)" }}>3. Open Billing Document</div>
+                <p style={{ marginTop: 10, marginBottom: 0, color: "var(--muted)", lineHeight: 1.7 }}>
+                  {summary.existingInvoice
+                    ? "An invoice already exists for this owner/month. Review that document instead of generating a duplicate."
+                    : "No invoice exists yet for this owner/month. Generate a draft after reviewing the charge breakdown."}
+                </p>
+              </div>
+            </div>
+          </CardSection>
+
+          <CardSection title={`Owner Month Review: ${summary.owner.name}`}>
             <p style={{ ...metaTextStyle, marginTop: 0, marginBottom: 16, lineHeight: 1.7 }}>
               Estimated charges come from ledger-based head-days, allocated feed, and stored treatment snapshots. Invoice totals on this screen include draft and finalized invoices only. Voided invoices are excluded.
             </p>
@@ -220,14 +266,6 @@ export default async function ReportsPage({ searchParams }: ReportsPageProps) {
                   description: `Accumulated across lots overlapping ${summary.label}.`,
                 },
                 {
-                  label: "Yardage Amount",
-                  value: `$${summary.yardageAmount.toFixed(2)}`,
-                  description:
-                    summary.owner.yardageRatePerHeadDay === null
-                      ? "Billing settings incomplete. Yardage rate is not set."
-                      : `Calculated at $${summary.owner.yardageRatePerHeadDay.toFixed(2)} per head-day.`,
-                },
-                {
                   label: "Treatment Charges",
                   value: `$${summary.treatmentCharges.toFixed(2)}`,
                   description:
@@ -239,6 +277,14 @@ export default async function ReportsPage({ searchParams }: ReportsPageProps) {
                   label: "Feed Charges",
                   value: `$${summary.feedCost.toFixed(2)}`,
                   description: feedSummaryDescription ?? "No feed cost allocated for this month.",
+                },
+                {
+                  label: "Yardage Amount",
+                  value: `$${summary.yardageAmount.toFixed(2)}`,
+                  description:
+                    summary.owner.yardageRatePerHeadDay === null
+                      ? "Billing settings incomplete. Yardage rate is not set."
+                      : `Calculated at $${summary.owner.yardageRatePerHeadDay.toFixed(2)} per head-day.`,
                 },
                 {
                   label: "Invoice Total",
@@ -261,7 +307,21 @@ export default async function ReportsPage({ searchParams }: ReportsPageProps) {
           </CardSection>
 
           <CardSection title="Charge Breakdown">
-            <div style={{ display: "grid", gap: 16, gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))" }}>
+            <details
+              style={{
+                border: "1px solid rgba(16, 42, 67, 0.08)",
+                borderRadius: 16,
+                padding: 14,
+                background: "rgba(255, 255, 255, 0.7)",
+              }}
+            >
+              <summary style={{ cursor: "pointer", fontWeight: 700, color: "var(--ink)" }}>
+                View yardage, feed, treatment, and invoice match logic
+              </summary>
+              <p style={{ ...metaTextStyle, marginTop: 12, marginBottom: 16, lineHeight: 1.7 }}>
+                Open this when you need to explain exactly why the owner total is what it is.
+              </p>
+              <div style={{ display: "grid", gap: 16, gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))" }}>
               <div className="stocker-card" style={{ ...cardStyle, padding: 18 }}>
                 <div style={{ fontWeight: 700, color: "var(--ink)" }}>Yardage Logic</div>
                 <div style={{ ...metaTextStyle, marginTop: 8, lineHeight: 1.7 }}>
@@ -397,10 +457,11 @@ export default async function ReportsPage({ searchParams }: ReportsPageProps) {
                   {summary.owner.billingNotes?.trim() || "No billing notes saved for this owner."}
                 </p>
               </div>
-            </div>
+              </div>
+            </details>
           </CardSection>
 
-          <CardSection title="Generate or Review Draft Invoice">
+          <CardSection title="Move Into Invoice Document">
             <div className="stocker-card" style={{ ...cardStyle, padding: 18 }}>
               <div style={{ fontWeight: 700, color: "var(--ink)" }}>Ready to Bill</div>
               <p style={{ marginTop: 10, color: "var(--muted)", lineHeight: 1.7 }}>
@@ -482,7 +543,7 @@ export default async function ReportsPage({ searchParams }: ReportsPageProps) {
                   View {summary.lotSummaries.length} lot{summary.lotSummaries.length === 1 ? "" : "s"} included in this review
                 </summary>
                 <p style={{ ...metaTextStyle, marginTop: 12, marginBottom: 0, lineHeight: 1.7 }}>
-                  Use this detail when you need to explain which open or overlapping lots contributed to the current month estimate.
+                  Use this only when you need to explain which lots contributed to the current month estimate.
                 </p>
                 <div style={{ display: "grid", gap: 14, marginTop: 14 }}>
                   {summary.lotSummaries.map((lot) => (

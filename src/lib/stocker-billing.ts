@@ -1,4 +1,4 @@
-import { InvoiceLineSource, InvoiceStatus, MedicineBillingMode } from "@prisma/client"
+import { InvoiceLineSource, InvoiceStatus, MedicineBillingMode, type Prisma } from "@prisma/client"
 import { getOwnerFeedSummary } from "@/lib/stocker-feed"
 import { prisma } from "@/lib/prisma"
 import { getMonthWindow } from "@/lib/stocker"
@@ -28,6 +28,8 @@ type InvoiceSummaryForWindowInput = {
   monthValue: string
 }
 
+type BillingClient = typeof prisma | Prisma.TransactionClient
+
 function roundMoney(value: number) {
   return Math.round((value + Number.EPSILON) * 100) / 100
 }
@@ -35,6 +37,42 @@ function roundMoney(value: number) {
 function roundQuantity(value: number, digits = 4) {
   const factor = 10 ** digits
   return Math.round((value + Number.EPSILON) * factor) / factor
+}
+
+export async function findExistingNonVoidInvoiceForMonth(
+  {
+    organizationId,
+    ownerId,
+    monthStart,
+    monthEnd,
+    monthValue,
+  }: InvoiceSummaryForWindowInput & { ownerId: string },
+  client: BillingClient = prisma,
+) {
+  return client.invoice.findFirst({
+    where: {
+      organizationId,
+      ownerId,
+      status: { not: InvoiceStatus.VOID },
+      OR: [
+        { billingMonth: monthValue },
+        {
+          billingMonth: null,
+          date: { gte: monthStart, lt: monthEnd },
+        },
+      ],
+    },
+    orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+    select: {
+      id: true,
+      ownerId: true,
+      total: true,
+      date: true,
+      billingMonth: true,
+      status: true,
+      finalizedAt: true,
+    },
+  })
 }
 
 export async function getInvoiceSummaryForWindow({
@@ -102,6 +140,8 @@ export async function getInvoiceSummaryForWindow({
     existingInvoice: monthlyInvoices[0] ?? null,
   }
 }
+
+export { roundMoney }
 
 export function calculateTreatmentChargeWithMarkup({
   billableAmount,

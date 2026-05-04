@@ -101,13 +101,38 @@ export default async function FeedMonthlyPage({ searchParams }: FeedMonthlyPageP
             </p>
           </article>
         </div>
+        <div style={{ ...stackStyle, marginTop: 16 }}>
+          <div style={{ color: "var(--muted)", lineHeight: 1.6 }}>
+            {summary.allocatedEntryCount} of {summary.totalEntryCount} feed entries were allocated into owner charges for {label}.
+          </div>
+          {summary.unallocatedEntryCount > 0 ? (
+            <div
+              className="stocker-card"
+              style={{
+                ...cardStyle,
+                padding: 16,
+                borderColor: "color-mix(in srgb, var(--primary) 22%, rgba(15, 23, 42, 0.12))",
+                background: "color-mix(in srgb, white 88%, var(--paper) 12%)",
+              }}
+            >
+              <div style={{ fontWeight: 700, color: "var(--ink)" }}>
+                {summary.unallocatedEntryCount} feed {summary.unallocatedEntryCount === 1 ? "entry needs" : "entries need"} allocation review
+              </div>
+              <p style={{ margin: "8px 0 0", color: "var(--muted)", lineHeight: 1.6 }}>
+                Shared-pen feed without complete owner allocation rules does not roll into owner billing until the rule gap is fixed.
+              </p>
+            </div>
+          ) : null}
+        </div>
       </CardSection>
 
       <CardSection title="Owner and Lot Allocation">
         {summary.rows.length === 0 ? (
           <div className="stocker-empty-state" style={emptyStateStyle}>
             <strong style={{ display: "block", marginBottom: 8 }}>No allocated feed for this month.</strong>
-            Record daily feed entries or add shared-pen allocation rules before reviewing monthly feed charges.
+            {summary.totalEntryCount > 0
+              ? "Feed was recorded this month, but none of it is billable until the active pen/owner allocation path is valid."
+              : "Record daily feed entries or add shared-pen allocation rules before reviewing monthly feed charges."}
           </div>
         ) : (
           <>

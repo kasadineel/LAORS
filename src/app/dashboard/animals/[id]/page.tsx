@@ -1,20 +1,22 @@
-import Link from "next/link"
 import { notFound, redirect } from "next/navigation"
-import { currentUser } from "@clerk/nextjs/server"
 import { ModuleKey } from "@prisma/client"
-import { ensureCore } from "@/lib/ensure-core"
 import { requireModuleForOrganization } from "@/lib/module-entitlements"
 import { prisma } from "@/lib/prisma"
+import { getAnimalEventTypeLabel, normalizeAnimalEventType } from "@/lib/animal-events"
+import { requireStockerAccess, parseDateInput, parseNumberInput, toDateInputValue } from "@/lib/stocker"
+import { PageHeader } from "@/components/stocker/PageHeader"
+import { StatusRow } from "@/components/stocker/StatusRow"
+import { ActionBar } from "@/components/stocker/ActionBar"
+import { CardSection } from "@/components/stocker/CardSection"
+import { Button } from "@/components/stocker/ui/Button"
+import { Input } from "@/components/stocker/ui/Input"
+import { Select } from "@/components/stocker/ui/Select"
+import { Textarea } from "@/components/stocker/ui/Textarea"
+import { getRoleDisplayName } from "@/lib/permissions"
+import { cardStyle, emptyStateStyle, metaTextStyle, pageStyle, stackStyle } from "@/lib/stocker-ui"
 
 export default async function AnimalDetailPage({ params }: { params: { id: string } }) {
-  const user = await currentUser()
-  if (!user) redirect("/sign-in")
-
-  const core = await ensureCore({
-    clerkUserId: user.id,
-    email: user.emailAddresses[0]?.emailAddress ?? "",
-    name: [user.firstName, user.lastName].filter(Boolean).join(" ") || null,
-  })
+  const core = await requireStockerAccess()
   await requireModuleForOrganization(core.activeOrganizationId, ModuleKey.STOCKER)
 
   const animal = await prisma.animal.findFirst({
@@ -24,6 +26,8 @@ export default async function AnimalDetailPage({ params }: { params: { id: strin
       tagNumber: true,
       name: true,
       sexClass: true,
+      birthDate: true,
+      notes: true,
       createdAt: true,
     },
   })
@@ -41,7 +45,7 @@ export default async function AnimalDetailPage({ params }: { params: { id: strin
   })
 
   const weights = events
-    .filter((e) => e.type === "WEIGHT" && e.value !== null && e.value !== undefined)
+    .filter((e) => normalizeAnimalEventType(e.type) === "WEIGHT" && e.value !== null && e.value !== undefined)
     .map((e) => ({
       id: e.id,
       eventDate: e.eventDate,
@@ -56,6 +60,33 @@ export default async function AnimalDetailPage({ params }: { params: { id: strin
   const latestWeight = weights[0]?.value ?? null
   const prevWeight = weights[1]?.value ?? null
   const delta = latestWeight !== null && prevWeight !== null ? latestWeight - prevWeight : null
+
+  async function createEvent(formData: FormData) {
+    "use server"
+
+    await requireModuleForOrganization(orgId, ModuleKey.STOCKER)
+
+    const type = normalizeAnimalEventType(formData.get("type")?.toString())
+    const value = parseNumberInput(formData.get("value"))
+    const notes = (formData.get("notes")?.toString() || "").trim() || null
+    const eventDate = parseDateInput(formData.get("eventDate"), new Date())
+
+    if (!eventDate) return
+
+    await prisma.event.create({
+      data: {
+        type,
+        value,
+        notes,
+        eventDate,
+        animalId,
+        organizationId: orgId,
+        createdById: core.user.id,
+      },
+    })
+
+    redirect(`/dashboard/animals/${animalId}`)
+  }
 
   async function deleteEvent(formData: FormData) {
     "use server"
@@ -73,90 +104,106 @@ export default async function AnimalDetailPage({ params }: { params: { id: strin
   }
 
   return (
-    <main style={{ padding: 24, maxWidth: 900 }}>
-      <header
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          gap: 16,
-        }}
-      >
-        <div>
-          <h1 style={{ margin: 0 }}>
-            {animal.tagNumber ? `#${animal.tagNumber}` : "Animal"}
-            {animal.name ? ` — ${animal.name}` : ""}
-          </h1>
-          <p style={{ marginTop: 6 }}>{animal.sexClass ? `Sex: ${animal.sexClass}` : "Sex: —"}</p>
+    <main style={pageStyle}>
+      <PageHeader
+        title={`${animal.tagNumber ? `#${animal.tagNumber}` : "Animal"}${animal.name ? ` · ${animal.name}` : ""}`}
+        subtitle="Review an individual animal’s weight history and field events in one record."
+        badge="Core Records"
+      />
+      <StatusRow organizationName={core.organization.name} roleLabel={getRoleDisplayName(core.role)} />
+      <ActionBar
+        primaryAction={{ href: `/dashboard/animals/${animalId}/weight`, label: "+ Log Weight" }}
+        secondaryActions={[{ href: "/dashboard/animals", label: "Back to Animals" }]}
+      />
+
+      <CardSection title="Animal Snapshot">
+        <div style={{ display: "grid", gap: 14, gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}>
+          {[
+            { label: "Tag", value: animal.tagNumber ?? "Not recorded" },
+            { label: "Name", value: animal.name ?? "Unnamed" },
+            { label: "Sex Class", value: animal.sexClass ?? "Not recorded" },
+            { label: "Birth Date", value: animal.birthDate ? animal.birthDate.toLocaleDateString() : "Not recorded" },
+            { label: "Latest Weight", value: latestWeight === null ? "—" : `${latestWeight.toFixed(1)} lb` },
+            { label: "Change", value: delta === null ? "—" : `${delta >= 0 ? "+" : ""}${delta.toFixed(1)} lb` },
+          ].map((item) => (
+            <article key={item.label} className="stocker-card" style={{ ...cardStyle, padding: 16 }}>
+              <div style={{ ...metaTextStyle, textTransform: "uppercase", letterSpacing: "0.08em" }}>{item.label}</div>
+              <div style={{ marginTop: 8, fontWeight: 700, fontSize: 18, color: "var(--ink)" }}>{item.value}</div>
+            </article>
+          ))}
         </div>
+        {animal.notes ? (
+          <div className="stocker-card" style={{ ...cardStyle, padding: 16, marginTop: 16 }}>
+            <div style={{ fontWeight: 700, color: "var(--ink)", marginBottom: 8 }}>Animal Notes</div>
+            <p style={{ margin: 0, color: "var(--muted)", lineHeight: 1.6 }}>{animal.notes}</p>
+          </div>
+        ) : null}
+      </CardSection>
 
-        <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-          <Link href="/dashboard/animals">← Back</Link>
-          <Link href={`/dashboard/animals/${animalId}/weight`}>+ Log Weight</Link>
-        </div>
-      </header>
-
-      {/* Weights */}
-      <section style={{ marginTop: 18 }}>
-        <h2 style={{ marginBottom: 8 }}>Weights</h2>
-
-        <div style={{ padding: 12, border: "1px solid #eee", borderRadius: 12 }}>
+      <CardSection title="Add Event">
+        <form action={createEvent} style={{ ...stackStyle, maxWidth: 760 }}>
+          <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
+            <Select label="Event Type" name="type" defaultValue="NOTE" style={{}}>
+              <option value="NOTE">Note</option>
+              <option value="WEIGHT">Weight</option>
+              <option value="HEALTH">Health</option>
+              <option value="BREEDING">Breeding</option>
+            </Select>
+            <Input label="Value" name="value" inputMode="decimal" placeholder="Optional numeric value" style={{}} />
+            <Input label="Event Date" name="eventDate" type="date" defaultValue={toDateInputValue(new Date())} style={{}} />
+          </div>
+          <Textarea label="Notes" name="notes" rows={3} placeholder="Morning check, treatment note, or other context" style={{}} />
           <div>
-            <strong>Latest:</strong> {latestWeight === null ? "—" : `${latestWeight.toFixed(1)} lb`}
+            <Button type="submit" variant="primary">
+              Save Event
+            </Button>
           </div>
-          <div style={{ marginTop: 6 }}>
-            <strong>Change:</strong>{" "}
-            {delta === null ? "—" : `${delta >= 0 ? "+" : ""}${delta.toFixed(1)} lb`}
-          </div>
-        </div>
+        </form>
+      </CardSection>
 
+      <CardSection title="Weight History">
         {weights.length === 0 ? (
-          <p style={{ marginTop: 10 }}>No weights logged yet.</p>
+          <div className="stocker-empty-state" style={emptyStateStyle}>No weights logged yet.</div>
         ) : (
-          <ul style={{ marginTop: 10, paddingLeft: 18 }}>
-            {weights.slice(0, 20).map((w) => (
-              <li key={w.id} style={{ marginBottom: 12 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+          <div style={stackStyle}>
+            {weights.slice(0, 20).map((weight) => (
+              <article key={weight.id} className="stocker-card" style={{ ...cardStyle, padding: 16 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
                   <div>
-                    <strong>{w.value.toFixed(1)} lb</strong>
-                    {w.notes ? ` — ${w.notes}` : ""}
-                    <div style={{ fontSize: 12, opacity: 0.75 }}>
-                      {new Date(w.eventDate).toLocaleString()}
-                    </div>
+                    <div style={{ fontWeight: 700, color: "var(--ink)" }}>{weight.value.toFixed(1)} lb</div>
+                    <div style={metaTextStyle}>{new Date(weight.eventDate).toLocaleString()}</div>
+                    {weight.notes ? <div style={{ ...metaTextStyle, marginTop: 6 }}>{weight.notes}</div> : null}
                   </div>
-
                   <form action={deleteEvent}>
-                    <input type="hidden" name="eventId" value={w.id} />
-                    <button type="submit" style={{ fontSize: 12, padding: "6px 10px" }}>
+                    <input type="hidden" name="eventId" value={weight.id} />
+                    <Button type="submit" variant="secondary" size="sm">
                       Delete
-                    </button>
+                    </Button>
                   </form>
                 </div>
-              </li>
+              </article>
             ))}
-          </ul>
+          </div>
         )}
-      </section>
+      </CardSection>
 
-      {/* Recent events (all types) */}
-      <section style={{ marginTop: 22 }}>
-        <h2 style={{ marginBottom: 8 }}>Recent Events</h2>
-
+      <CardSection title="Recent Events">
         {events.length === 0 ? (
-          <p style={{ marginTop: 8 }}>No events yet.</p>
+          <div className="stocker-empty-state" style={emptyStateStyle}>No events logged for this animal yet.</div>
         ) : (
-          <ul style={{ marginTop: 8, paddingLeft: 18 }}>
-            {events.slice(0, 20).map((e) => (
-              <li key={e.id} style={{ marginBottom: 8 }}>
-                <strong>{e.type}</strong>{" "}
-                {e.value !== null && e.value !== undefined ? `— ${e.value}` : ""}
-                {e.notes ? ` — ${e.notes}` : ""}
-                <div style={{ fontSize: 12, opacity: 0.75 }}>{new Date(e.eventDate).toLocaleString()}</div>
-              </li>
+          <div style={stackStyle}>
+            {events.slice(0, 20).map((event) => (
+              <article key={event.id} className="stocker-card" style={{ ...cardStyle, padding: 16 }}>
+                <div style={{ fontWeight: 700, color: "var(--ink)" }}>
+                  {getAnimalEventTypeLabel(event.type)}{event.value !== null && event.value !== undefined ? ` · ${event.value}` : ""}
+                </div>
+                <div style={metaTextStyle}>{new Date(event.eventDate).toLocaleString()}</div>
+                {event.notes ? <p style={{ marginBottom: 0, marginTop: 10, color: "var(--muted)" }}>{event.notes}</p> : null}
+              </article>
             ))}
-          </ul>
+          </div>
         )}
-      </section>
+      </CardSection>
     </main>
   )
 }

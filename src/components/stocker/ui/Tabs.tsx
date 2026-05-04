@@ -13,8 +13,9 @@ type TabsProps = {
 }
 
 function isActive(pathname: string, href: string) {
-  if (href === "/dashboard/stocker") return pathname === href
-  return pathname === href || pathname.startsWith(`${href}/`)
+  const normalizedHref = href.split("#")[0]?.split("?")[0] ?? href
+  if (normalizedHref === "/dashboard/stocker") return pathname === normalizedHref
+  return pathname === normalizedHref || pathname.startsWith(`${normalizedHref}/`)
 }
 
 export function Tabs({ items }: TabsProps) {

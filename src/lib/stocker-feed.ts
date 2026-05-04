@@ -558,7 +558,7 @@ export async function getMonthlyFeedSummary({
   monthStart,
   monthEnd,
 }: FeedRangeInput) {
-  const { rows, unallocatedEntries } = await getFeedAllocationRowsForRange({
+  const { rows, unallocatedEntries, entrySummaries } = await getFeedAllocationRowsForRange({
     organizationId,
     monthStart,
     monthEnd,
@@ -604,6 +604,9 @@ export async function getMonthlyFeedSummary({
       totalTons: roundAmount(groupedRows.reduce((sum, row) => sum + row.totalTons, 0), 4),
       totalCost: roundAmount(groupedRows.reduce((sum, row) => sum + row.totalCost, 0), 2),
     },
+    totalEntryCount: entrySummaries.length,
+    allocatedEntryCount: new Set(rows.map((row) => row.entryId)).size,
+    unallocatedEntryCount: unallocatedEntries.length,
     unallocatedEntries,
   }
 }
